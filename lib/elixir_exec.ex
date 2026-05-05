@@ -58,7 +58,14 @@ defmodule ElixirExec do
   # Types
   # ---------------------------------------------------------------------------
 
-  @typedoc "An external command -- a single string or a `[exe | args]` list."
+  @typedoc """
+  An external command -- a single string or a `[exe | args]` list.
+
+  The string form is parsed by the OS shell, which performs PATH lookup.
+  The list form is executed directly without shell parsing; if `exe` is
+  a bare name (no `/`, `./`, or `../` prefix), it is resolved against
+  `PATH` via `System.find_executable/1` before it is handed to `:exec`.
+  """
   @type command :: String.t() | [String.t()]
 
   @typedoc "An OS-level process id (a non-negative integer)."
@@ -88,7 +95,10 @@ defmodule ElixirExec do
 
     - `command` - `String.t() | [String.t()]`. The command to run. A
       single string is parsed by the OS shell; a `[exe | args]` list is
-      executed directly without shell parsing.
+      executed directly without shell parsing. If `exe` is a bare name
+      (no `/`, `./`, or `../` prefix), it is resolved against `PATH`
+      via `System.find_executable/1` so list-form callers get the same
+      lookup behaviour as the string form.
     - `options` - `keyword()`. Run options. Notable keys:
         * `:sync` (boolean) — block until the command exits and capture
           output.

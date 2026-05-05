@@ -83,10 +83,27 @@ defmodule ElixirExec.Options do
     NimbleOptions.validate(opts, @exec_nimble)
   end
 
-  @spec to_erl_command(String.t() | [String.t() | [String.t()]]) ::
-          charlist | [charlist | [charlist]]
+  @spec to_erl_command(String.t() | [String.t()]) :: charlist | [charlist]
+  # String form: shell parses the line, so the shell handles PATH lookup.
   def to_erl_command(command) when is_binary(command), do: to_charlist(command)
 
+  # Pass-through shapes: an absolute, CWD-relative, or parent-relative head
+  # is what the caller asked for verbatim -- no PATH lookup.
+  def to_erl_command(["/" <> _ | _] = command), do: Enum.map(command, &to_charlist/1)
+  def to_erl_command(["./" <> _ | _] = command), do: Enum.map(command, &to_charlist/1)
+  def to_erl_command(["../" <> _ | _] = command), do: Enum.map(command, &to_charlist/1)
+
+  # Bare-name head: erlexec calls execve directly, which does not search
+  # PATH. Resolve via System.find_executable/1 so list-form callers see
+  # the same lookup behaviour as the string form. Falls back to the
+  # original head when resolution fails so the caller still sees ENOENT
+  # rather than a silent rewrite.
+  def to_erl_command([exe | args]) when is_binary(exe) do
+    resolved = System.find_executable(exe) || exe
+    Enum.map([resolved | args], &to_charlist/1)
+  end
+
+  # Empty list (and any other list shape) -- map straight through.
   def to_erl_command(command) when is_list(command) do
     Enum.map(command, &to_charlist/1)
   end

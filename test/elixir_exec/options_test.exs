@@ -8,17 +8,52 @@ defmodule ElixirExec.OptionsTest do
   # ----------------------------------------------------------------------
 
   describe "to_erl_command/1" do
-    test "converts a binary command to a charlist" do
+    test "converts a binary command to a charlist (shell handles PATH)" do
       assert Options.to_erl_command("echo hi") === ~c"echo hi"
-    end
-
-    test "converts a list of binaries to a list of charlists" do
-      assert Options.to_erl_command(["bash", "-c", "ls"]) ===
-               [~c"bash", ~c"-c", ~c"ls"]
     end
 
     test "preserves an empty list" do
       assert Options.to_erl_command([]) === []
+    end
+
+    test "absolute path head passes through unresolved" do
+      assert Options.to_erl_command(["/bin/sh", "-c", "echo hi"]) ===
+               [~c"/bin/sh", ~c"-c", ~c"echo hi"]
+    end
+
+    test "CWD-relative './' head passes through unresolved" do
+      assert Options.to_erl_command(["./does-not-exist", "arg"]) ===
+               [~c"./does-not-exist", ~c"arg"]
+    end
+
+    test "parent-relative '../' head passes through unresolved" do
+      assert Options.to_erl_command(["../does-not-exist", "arg"]) ===
+               [~c"../does-not-exist", ~c"arg"]
+    end
+
+    test "bare-name head is resolved against PATH" do
+      # `sh` is on PATH on every supported platform; `find_executable/1`
+      # returns its absolute location.
+      resolved = System.find_executable("sh")
+      refute is_nil(resolved), "expected `sh` to be on PATH for this test"
+
+      assert Options.to_erl_command(["sh", "-c", "echo hi"]) ===
+               [to_charlist(resolved), ~c"-c", ~c"echo hi"]
+    end
+
+    test "bare-name head not on PATH falls back to the original name" do
+      # When `find_executable/1` returns `nil`, the head is preserved
+      # verbatim so callers still see an ENOENT from exec rather than
+      # a silent rewrite.
+      assert Options.to_erl_command(["definitely-not-a-real-binary-xyz", "a"]) ===
+               [~c"definitely-not-a-real-binary-xyz", ~c"a"]
+    end
+
+    test "non-head args are converted to charlists without resolution" do
+      # Args that look like bare names must not be resolved -- only the
+      # head (the executable) goes through PATH lookup.
+      assert Options.to_erl_command(["/bin/sh", "sh", "ls"]) ===
+               [~c"/bin/sh", ~c"sh", ~c"ls"]
     end
   end
 
