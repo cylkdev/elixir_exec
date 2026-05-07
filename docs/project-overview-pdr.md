@@ -17,7 +17,7 @@ This library exists to give Elixir callers a more familiar interface to the same
 | Concern | `:erlexec` shape | `elixir_exec` shape |
 |---|---|---|
 | Options | Erlang proplists, charlist values | Keyword lists with NimbleOptions validation, binary values |
-| Return values | Tagged tuples with raw types | Structs (`%OSProcess{}`, `%Output{}`) |
+| Return values | Tagged tuples with raw types | Structs (`%Handle{}`, `%Output{}`) |
 | Streaming output | None — caller wires up message handling | `Stream.unfold/2`-backed `Enumerable` |
 | Sync runs | Proplist of `{:stdout, [chunk]}` | `%Output{stdout: [...], stderr: [...]}` |
 | Errors | Mix of returns and exits | NimbleOptions errors + tagged `{:error, _}` |

@@ -5,7 +5,7 @@
 `elixir_exec` is a wrapper, not an engine. The engine is `:erlexec`, which runs as a single Erlang process plus a port driver to a small C program (`exec-port`) that does the actual `fork/exec`, signal delivery, and IO multiplexing. This library adds three things on top:
 
 1. **Option validation and translation** (`ElixirExec.Options`).
-2. **Result wrapping** (`ElixirExec.OSProcess`, `ElixirExec.Output`).
+2. **Result wrapping** (`ElixirExec.Handle`, `ElixirExec.Output`).
 3. **A streaming abstraction** for line-by-line stdout consumption (`ElixirExec.Stream` + `ElixirExec.StreamSupervisor` + `ElixirExec.Stream.Buffer`).
 
 Everything else (process lifetime, signals, stdin) is delegated through to `:erlexec` directly.
@@ -32,7 +32,7 @@ graph TD
     Wn -.holds.-> Bn
 ```
 
-Stream workers are started **on demand** by `ElixirExec.Runner` only when the caller passes `stdout: :stream` (which `stream/2` does implicitly). Restart strategy is **`:temporary`** — when a worker exits for any reason it stays exited; consumers see iteration end cleanly via the `Stream.unfold/2` accumulator.
+Stream workers are started **on demand** by `ElixirExec.Core` only when the caller passes `stdout: :stream` (which `stream/2` does implicitly). Restart strategy is **`:temporary`** — when a worker exits for any reason it stays exited; consumers see iteration end cleanly via the `Stream.unfold/2` accumulator.
 
 `:erlexec` itself is started by its own application and is **not** under this library's supervisor. It runs alongside as a sibling.
 
@@ -61,7 +61,7 @@ graph LR
     B[ElixirExec.run_link/2]
     C[ElixirExec.stream/2]
     D[ElixirExec.manage/2]
-    R[ElixirExec.Runner.run/3]
+    R[ElixirExec.Core.run/3]
     O[ElixirExec.Options]
     Exec[:exec.run · :exec.run_link · :exec.manage]
 
@@ -71,20 +71,20 @@ graph LR
     R -->|validate| O
     O --> R
     R --> Exec
-    D -->|skips Runner| O
+    D -->|skips Core| O
     D --> Exec
 ```
 
-`run/2`, `run_link/2`, and `stream/2` go through `ElixirExec.Runner.run/3`. `manage/2` calls `:exec.manage` directly — there is no streaming or sync mode for adopted processes.
+`run/2`, `run_link/2`, and `stream/2` go through `ElixirExec.Core.run/3`. `manage/2` calls `:exec.manage` directly — there is no streaming or sync mode for adopted processes.
 
-## Runner pipeline
+## Core pipeline
 
-`ElixirExec.Runner.run/3` is the single funnel for every fresh process start. It is a small pipeline:
+`ElixirExec.Core.run/3` is the single funnel for every fresh process start. It is a small pipeline:
 
 ```mermaid
 sequenceDiagram
     participant C as Caller
-    participant R as Runner
+    participant R as Core
     participant O as Options
     participant SS as StreamSupervisor
     participant W as Stream worker
@@ -119,9 +119,9 @@ sequenceDiagram
         alt streaming
             R->>W: attach(controller_pid)
             W-->>R: :ok
-            R-->>C: {:ok, %OSProcess{controller, os_pid, stream}}
+            R-->>C: {:ok, %Handle{controller, os_pid, stream}}
         else not streaming
-            R-->>C: {:ok, %OSProcess{controller, os_pid, stream: nil}}
+            R-->>C: {:ok, %Handle{controller, os_pid, stream: nil}}
         end
     end
 ```
@@ -183,15 +183,15 @@ The buffer is a plain `:queue` plus a small amount of mode-specific state (a par
 
 ### Race-free attach
 
-The flow has one subtle correctness requirement: the worker must install its `Process.monitor/1` on the `:erlexec` controller pid **before** the controller could possibly exit. `ElixirExec.Stream.attach/2` is a synchronous `GenServer.call` that installs the monitor and returns. `ElixirExec.Runner.run/3` calls `attach/2` immediately after `:exec.run/2` returns and before handing the `%OSProcess{stream: enum}` back to the caller. This closes the race where a very short-lived program could exit before the monitor is set up.
+The flow has one subtle correctness requirement: the worker must install its `Process.monitor/1` on the `:erlexec` controller pid **before** the controller could possibly exit. `ElixirExec.Stream.attach/2` is a synchronous `GenServer.call` that installs the monitor and returns. `ElixirExec.Core.run/3` calls `attach/2` immediately after `:exec.run/2` returns and before handing the `%Handle{stream: enum}` back to the caller. This closes the race where a very short-lived program could exit before the monitor is set up.
 
 ## Error and exit handling
 
 | Source | Surface |
 |---|---|
-| Option-validation failure | `{:error, %NimbleOptions.ValidationError{}}` from `Runner.run/3`; no process is started. |
+| Option-validation failure | `{:error, %NimbleOptions.ValidationError{}}` from `Core.run/3`; no process is started. |
 | Illegal combination (`sync` + `stream`) | `{:error, {:illegal_combination, :sync_with_stream}}`. |
-| `:erlexec` rejects the command | `{:error, term()}` propagated; if a stream worker was started speculatively, `Runner.finalize/2` shuts it down. |
+| `:erlexec` rejects the command | `{:error, term()}` propagated; if a stream worker was started speculatively, `Core.finalize/2` shuts it down. |
 | OS process exits normally | Async runs deliver `{:DOWN, os_pid, :process, ctl_pid, :normal}`; `decode_reason/1` translates this to `0`. |
 | OS process exits with status | `{:DOWN, ..., {:exit_status, n}}` → `decode_reason/1` returns `n`. |
 | OS process killed by signal | `{:DOWN, ..., {:exit_status, raw}}` where `raw` encodes the signal; `ElixirExec.status/1` decodes to `{:signal, name, dumped?}`. |
@@ -200,7 +200,7 @@ The flow has one subtle correctness requirement: the worker must install its `Pr
 ## Concurrency model
 
 - **One stream worker per streaming run.** Workers are independent; nothing crosses between them.
-- **No registry, no ETS.** Workers are reachable only via the pid returned in `%OSProcess{}`; the `Enumerable` closes over that pid.
+- **No registry, no ETS.** Workers are reachable only via the pid returned in `%Handle{}`; the `Enumerable` closes over that pid.
 - **Single parked consumer per worker.** The `Buffer` parks at most one `from` reference. Multiple concurrent iterators on the same stream are not a supported pattern.
 - **`:exec`'s own registry** is what `os_pid/1`, `pid/1`, and `which_children/0` reach into. This library does not maintain a parallel index.
 
@@ -211,7 +211,7 @@ The flow has one subtle correctness requirement: the worker must install its `Pr
 | Public API surface | `lib/elixir_exec.ex` |
 | Application bootstrap | `lib/elixir_exec/application.ex` |
 | Validation + Erlang translation | `lib/elixir_exec/options.ex` |
-| Runner pipeline | `lib/elixir_exec/runner.ex` |
+| Core pipeline | `lib/elixir_exec/runner.ex` |
 | Stream worker (GenServer) | `lib/elixir_exec/stream.ex` |
 | Stream supervisor | `lib/elixir_exec/stream_supervisor.ex` |
 | Stream buffer (pure data) | `lib/elixir_exec/stream/buffer.ex` |

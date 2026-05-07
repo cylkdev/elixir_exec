@@ -59,6 +59,11 @@ defmodule ElixirExec.StreamSupervisor do
   @doc """
   Starts a new `ElixirExec.Stream` worker in `mode` under this supervisor.
 
+  `opts` is a keyword list forwarded to `ElixirExec.Stream.Buffer.new/2`.
+  In `:lines` mode the only meaningful option today is `:delim` (a
+  non-empty binary, default `"\\n"`), which controls how stdout chunks
+  are split into lines.
+
   Returns `{:ok, pid, enum}` on success, where `enum` is the `Enumerable.t()`
   the caller should iterate to drain the worker's output. The third element
   produced by `ElixirExec.Stream.start_link/1` (when present) is discarded:
@@ -70,9 +75,9 @@ defmodule ElixirExec.StreamSupervisor do
   the supervisor cannot bring that process back. If the worker exits — for
   any reason — it is removed from the supervisor and not restarted.
   """
-  @spec start_stream(StreamServer.mode()) :: start_stream_result()
-  def start_stream(mode) do
-    spec = Supervisor.child_spec({StreamServer, mode}, restart: :temporary)
+  @spec start_stream(StreamServer.mode(), keyword()) :: start_stream_result()
+  def start_stream(mode, opts \\ []) when is_list(opts) do
+    spec = Supervisor.child_spec({StreamServer, {mode, opts}}, restart: :temporary)
 
     case DynamicSupervisor.start_child(__MODULE__, spec) do
       {:ok, pid} ->

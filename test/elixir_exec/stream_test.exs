@@ -99,6 +99,39 @@ defmodule ElixirExec.StreamTest do
   # :lines mode
   # ---------------------------------------------------------------------------
 
+  describe ":lines mode with custom delim" do
+    test "lines mode with custom delim splits and re-appends" do
+      {:ok, server, stream} = ExStream.start_link(:lines, delim: "|")
+      port_pid = spawn_dummy_port(server)
+
+      send_stdout(server, "a|b|c")
+      send(port_pid, :exit)
+
+      assert Enum.to_list(stream) === ["a|", "b|", "c"]
+    end
+
+    test "start_link/1 still works with default delim" do
+      {:ok, server, stream} = ExStream.start_link(:lines)
+      port_pid = spawn_dummy_port(server)
+
+      send_stdout(server, "a\nb\n")
+      send(port_pid, :exit)
+
+      assert Enum.to_list(stream) === ["a\n", "b\n"]
+    end
+
+    test "child_spec tuple form ({mode, opts}) routes through start_link/1" do
+      {:ok, pid, stream} = ExStream.start_link({:lines, [delim: "|"]})
+      assert is_pid(pid)
+      port_pid = spawn_dummy_port(pid)
+
+      send_stdout(pid, "a|b|")
+      send(port_pid, :exit)
+
+      assert Enum.to_list(stream) === ["a|", "b|"]
+    end
+  end
+
   describe ":lines mode" do
     test "reassembles chunks split across newline boundaries" do
       {:ok, server, stream} = ExStream.start_link(:lines)

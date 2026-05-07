@@ -87,6 +87,23 @@ defmodule ElixirExec.StreamSupervisorTest do
     end
   end
 
+  describe "start_stream/2 with options" do
+    test "passes :delim through to the worker (lines mode, custom delim)" do
+      assert {:ok, pid, enum} = StreamSupervisor.start_stream(:lines, delim: "|")
+      port_pid = attach_dummy_port(pid)
+
+      send(pid, {:stdout, 1, "a|b|c"})
+      send(port_pid, :exit)
+
+      assert Enum.to_list(enum) === ["a|", "b|", "c"]
+    end
+
+    test "start_stream/1 still works (defaults the opts to [])" do
+      assert {:ok, pid, _enum} = StreamSupervisor.start_stream(:lines)
+      stop_and_await(pid)
+    end
+  end
+
   # ---------------------------------------------------------------------------
   # Crash isolation
   # ---------------------------------------------------------------------------

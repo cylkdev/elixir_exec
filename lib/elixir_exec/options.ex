@@ -44,7 +44,9 @@ defmodule ElixirExec.Options do
     pty_echo: [type: :boolean],
     winsz: [type: {:tuple, [:pos_integer, :pos_integer]}],
     capabilities: [type: {:or, [{:in, [:all]}, {:list, :atom}]}],
-    debug: [type: {:or, [:boolean, :non_neg_integer]}]
+    debug: [type: {:or, [:boolean, :non_neg_integer]}],
+    delim: [type: {:custom, __MODULE__, :validate_delim, []}, default: "\n"],
+    drain: [type: :boolean, default: true]
   ]
 
   @exec_schema [
@@ -122,6 +124,14 @@ defmodule ElixirExec.Options do
   # NimbleOptions custom validator for stdout/stderr shapes.
   # Public only so NimbleOptions can resolve it; not part of the contract.
   # ----------------------------------------------------------------------
+
+  @doc false
+  @spec validate_delim(term) :: {:ok, binary()} | {:error, String.t()}
+  def validate_delim(value) when is_binary(value) and byte_size(value) > 0,
+    do: {:ok, value}
+
+  def validate_delim(value),
+    do: {:error, "expected non-empty binary, got: #{inspect(value)}"}
 
   @doc false
   @spec validate_output_device(term, :stdout | :stderr) :: {:ok, term} | {:error, String.t()}
@@ -239,6 +249,13 @@ defmodule ElixirExec.Options do
   defp command_option_to_erl({:debug, true}), do: [:debug]
   defp command_option_to_erl({:debug, false}), do: []
   defp command_option_to_erl({:debug, value}) when is_integer(value), do: [{:debug, value}]
+
+  # Library-internal options that are consumed before erlexec sees them:
+  # `:delim` and `:drain` are read by `ElixirExec.Core` to configure the
+  # streaming worker and the caller-side mailbox drain, respectively. They
+  # are stripped from the proplist passed to erlexec.
+  defp command_option_to_erl({:delim, _value}), do: []
+  defp command_option_to_erl({:drain, _value}), do: []
 
   # ----------------------------------------------------------------------
   # Output device translation (stdout / stderr)

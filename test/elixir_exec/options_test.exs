@@ -373,6 +373,27 @@ defmodule ElixirExec.OptionsTest do
     end
   end
 
+  describe "to_erl_command_options/1 strips library-internal keys" do
+    test ":delim is stripped (not part of the erlexec proplist)" do
+      assert Options.to_erl_command_options(delim: "|") === []
+      assert Options.to_erl_command_options(delim: "\n") === []
+    end
+
+    test ":drain is stripped (not part of the erlexec proplist)" do
+      assert Options.to_erl_command_options(drain: true) === []
+      assert Options.to_erl_command_options(drain: false) === []
+    end
+
+    test "both stripped together with no other options" do
+      assert Options.to_erl_command_options(delim: "|", drain: false) === []
+    end
+
+    test "stripped without affecting other options" do
+      assert Options.to_erl_command_options(monitor: true, delim: "|", drain: false) ===
+               [:monitor]
+    end
+  end
+
   # ----------------------------------------------------------------------
   # to_erl_exec_options/1
   # ----------------------------------------------------------------------
@@ -452,13 +473,56 @@ defmodule ElixirExec.OptionsTest do
   # ----------------------------------------------------------------------
 
   describe "validate_command/1" do
-    test "returns {:ok, opts} for valid options" do
+    test "returns {:ok, opts} for valid options (defaults included)" do
       opts = [monitor: true, cd: "/tmp", env: %{"FOO" => "bar"}]
-      assert {:ok, ^opts} = Options.validate_command(opts)
+      assert {:ok, validated} = Options.validate_command(opts)
+      # All caller-supplied options are preserved as-is.
+      for {key, value} <- opts do
+        assert Keyword.get(validated, key) === value
+      end
+      # Schema-supplied defaults are layered on.
+      assert Keyword.fetch!(validated, :delim) === "\n"
+      assert Keyword.fetch!(validated, :drain) === true
     end
 
-    test "returns {:ok, []} for empty options" do
-      assert {:ok, []} = Options.validate_command([])
+    test "returns {:ok, defaults} for empty options" do
+      assert {:ok, validated} = Options.validate_command([])
+      assert Keyword.fetch!(validated, :delim) === "\n"
+      assert Keyword.fetch!(validated, :drain) === true
+    end
+
+    test "accepts :delim with a custom non-empty binary" do
+      assert {:ok, validated} = Options.validate_command(delim: "|")
+      assert Keyword.fetch!(validated, :delim) === "|"
+
+      assert {:ok, validated} = Options.validate_command(delim: "\r\n")
+      assert Keyword.fetch!(validated, :delim) === "\r\n"
+    end
+
+    test "rejects empty :delim" do
+      assert {:error, %NimbleOptions.ValidationError{}} =
+               Options.validate_command(delim: "")
+    end
+
+    test "rejects non-binary :delim" do
+      assert {:error, %NimbleOptions.ValidationError{}} =
+               Options.validate_command(delim: :newline)
+
+      assert {:error, %NimbleOptions.ValidationError{}} =
+               Options.validate_command(delim: 10)
+    end
+
+    test "accepts :drain boolean" do
+      assert {:ok, validated} = Options.validate_command(drain: false)
+      assert Keyword.fetch!(validated, :drain) === false
+
+      assert {:ok, validated} = Options.validate_command(drain: true)
+      assert Keyword.fetch!(validated, :drain) === true
+    end
+
+    test "rejects non-boolean :drain" do
+      assert {:error, %NimbleOptions.ValidationError{}} =
+               Options.validate_command(drain: "yes")
     end
 
     test "rejects unknown keys with NimbleOptions.ValidationError" do

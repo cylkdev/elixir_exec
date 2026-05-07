@@ -18,11 +18,12 @@ defmodule ElixirExec.Stream.Buffer do
     * `:chunks` — stdout chunks are stored as raw strings, in the
       order they arrived. Stderr is dropped.
     * `:lines` — stdout chunks are stitched together and split on
-      `"\\n"`. Each complete line keeps its trailing newline and is
-      queued for emission. Any leftover tail (the bytes after the
-      last newline) is held in the `:partial` field until either more
-      stdout arrives or the program exits. On exit, a non-empty tail
-      is queued as the final element. Stderr is dropped.
+      the configured delim (default `"\\n"`). Each complete line keeps
+      its trailing delim and is queued for emission. Any leftover tail
+      (the bytes after the last delim) is held in the `:partial` field
+      until either more stdout arrives or the program exits. On exit,
+      a non-empty tail is queued as the final element (without a
+      trailing delim). Stderr is dropped.
     * `:stderr` — stderr chunks are stored as raw strings. Stdout is
       dropped.
     * `:merged` — both channels are stored, each chunk tagged as
@@ -30,7 +31,8 @@ defmodule ElixirExec.Stream.Buffer do
 
   ## Functions
 
-    * `new/1` — build an empty buffer in a chosen mode.
+    * `new/1` — build an empty buffer in a chosen mode (default delim `"\\n"` in `:lines` mode).
+    * `new/2` — same, plus a `delim:` option for `:lines` mode.
     * `attach/3` — remember the program's controller pid and the
       reference returned when the owning worker watched it for exit.
       (This module just stores them; the actual watch is set up by
@@ -65,6 +67,7 @@ defmodule ElixirExec.Stream.Buffer do
   @type t :: %__MODULE__{
           mode: mode(),
           queue: :queue.queue(element()),
+          delim: binary(),
           partial: binary(),
           done: boolean(),
           client: nil | GenServer.from(),
@@ -75,6 +78,7 @@ defmodule ElixirExec.Stream.Buffer do
   @enforce_keys [:mode, :queue]
   defstruct mode: nil,
             queue: nil,
+            delim: "\n",
             partial: "",
             done: false,
             client: nil,
@@ -97,8 +101,30 @@ defmodule ElixirExec.Stream.Buffer do
       true
   """
   @spec new(mode()) :: t()
-  def new(mode) when mode in [:lines, :chunks, :stderr, :merged] do
-    %__MODULE__{mode: mode, queue: :queue.new()}
+  def new(mode), do: new(mode, [])
+
+  @doc """
+  Build a fresh buffer in `mode` with options.
+
+  Supported options:
+
+    * `:delim` — non-empty binary used to split stdout into lines in
+      `:lines` mode. Default `"\\n"`. Ignored in other modes (still
+      stored on the struct, but never consulted).
+
+  Raises `ArgumentError` when `:delim` is not a non-empty binary.
+  """
+  @spec new(mode(), keyword()) :: t()
+  def new(mode, opts) when mode in [:lines, :chunks, :stderr, :merged] and is_list(opts) do
+    delim = Keyword.get(opts, :delim, "\n")
+
+    unless is_binary(delim) and delim !== "" do
+      raise ArgumentError,
+            "ElixirExec.Stream.Buffer: :delim must be a non-empty binary, got: " <>
+              inspect(delim)
+    end
+
+    %__MODULE__{mode: mode, queue: :queue.new(), delim: delim}
   end
 
   # ---------------------------------------------------------------------------
@@ -261,13 +287,14 @@ defmodule ElixirExec.Stream.Buffer do
     %{buffer | queue: :queue.in(element, q)}
   end
 
-  # Combine the chunk with `partial`, split on "\n", queue every complete
-  # line (with its trailing "\n"), and keep the tail as the new partial.
+  # Combine the chunk with `partial`, split on the configured `delim`,
+  # queue every complete line (with its trailing delim re-appended), and
+  # keep the tail as the new partial.
   @spec ingest_lines(t(), binary()) :: t()
-  defp ingest_lines(%__MODULE__{partial: partial, queue: q} = buffer, data) do
+  defp ingest_lines(%__MODULE__{partial: partial, queue: q, delim: delim} = buffer, data) do
     combined = partial <> data
 
-    case String.split(combined, "\n") do
+    case String.split(combined, delim) do
       [tail] ->
         %{buffer | partial: tail}
 
@@ -277,7 +304,7 @@ defmodule ElixirExec.Stream.Buffer do
 
         new_q =
           Enum.reduce(complete, q, fn line, acc ->
-            :queue.in(line <> "\n", acc)
+            :queue.in(line <> delim, acc)
           end)
 
         %{buffer | queue: new_q, partial: new_partial}

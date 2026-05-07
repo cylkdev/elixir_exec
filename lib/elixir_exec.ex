@@ -13,7 +13,7 @@ defmodule ElixirExec do
   Behind the scenes, the heavy lifting is done by an Erlang library called
   `:erlexec`. This module wraps it so you get a more Elixir-friendly
   experience: keyword options, structs like `%ElixirExec.Output{}` and
-  `%ElixirExec.OSProcess{}`, and helpful return values.
+  `%ElixirExec.Handle{}`, and helpful return values.
 
   ## Examples
 
@@ -24,14 +24,14 @@ defmodule ElixirExec do
 
   Start a command in the background, then read its output as it arrives:
 
-      iex> {:ok, %ElixirExec.OSProcess{os_pid: os_pid}} =
+      iex> {:ok, %ElixirExec.Handle{os_pid: os_pid}} =
       ...>   ElixirExec.run("echo hi", monitor: true, stdout: true)
       iex> {:stdout, "hi\\n"} = ElixirExec.receive_output(os_pid)
       iex> {:exit, 0} = ElixirExec.receive_output(os_pid)
 
   Read a long-running command line by line:
 
-      iex> {:ok, %ElixirExec.OSProcess{stream: stream}} =
+      iex> {:ok, %ElixirExec.Handle{stream: stream}} =
       ...>   ElixirExec.stream("for i in 1 2 3; do echo Iter\\$i; done")
       iex> Enum.to_list(stream)
       ["Iter1\\n", "Iter2\\n", "Iter3\\n"]
@@ -51,8 +51,8 @@ defmodule ElixirExec do
       operating-system process id (the same number you'd see in `ps`).
   """
 
-  alias ElixirExec.{Options, Output, Runner}
-  alias ElixirExec.OSProcess, as: ExProcess
+  alias ElixirExec.{Options, Output, Core}
+  alias ElixirExec.Handle, as: ExProcess
 
   # ---------------------------------------------------------------------------
   # Types
@@ -120,7 +120,7 @@ defmodule ElixirExec do
 
   ## Returns
 
-  `{:ok, %ElixirExec.OSProcess{}}` for an asynchronous run. The struct's
+  `{:ok, %ElixirExec.Handle{}}` for an asynchronous run. The struct's
   `:controller` is the Elixir pid managing the program; `:os_pid` is
   the operating-system pid; `:stream` is `nil` unless `stdout: :stream`
   was passed, in which case `:stream` is an `Enumerable` over the
@@ -146,7 +146,7 @@ defmodule ElixirExec do
       ...>   ElixirExec.run("echo hi", sync: true, stdout: true)
 
       # Asynchronous run with messages flowing to the caller:
-      iex> {:ok, %ElixirExec.OSProcess{os_pid: os_pid}} =
+      iex> {:ok, %ElixirExec.Handle{os_pid: os_pid}} =
       ...>   ElixirExec.run("echo hi", monitor: true, stdout: true)
       iex> {:stdout, "hi\\n"} = ElixirExec.receive_output(os_pid)
       iex> {:exit, 0} = ElixirExec.receive_output(os_pid)
@@ -157,7 +157,7 @@ defmodule ElixirExec do
   """
   @spec run(command(), command_options()) ::
           {:ok, ExProcess.t()} | {:ok, Output.t()} | {:error, term()}
-  def run(command, options \\ []), do: Runner.run(:run, command, options)
+  def run(command, options \\ []), do: Core.run(:run, command, options)
 
   @doc """
   Starts an external command exactly like `run/2`, but links the calling
@@ -182,7 +182,7 @@ defmodule ElixirExec do
       # messages, which doesn't fit a doctest.
       Process.flag(:trap_exit, true)
 
-      {:ok, %ElixirExec.OSProcess{controller: pid, os_pid: os_pid}} =
+      {:ok, %ElixirExec.Handle{controller: pid, os_pid: os_pid}} =
         ElixirExec.run_link("echo $FOO; false",
                             stdout: true,
                             env: %{"FOO" => "BAR"})
@@ -197,7 +197,7 @@ defmodule ElixirExec do
   """
   @spec run_link(command(), command_options()) ::
           {:ok, ExProcess.t()} | {:ok, Output.t()} | {:error, term()}
-  def run_link(command, options \\ []), do: Runner.run(:run_link, command, options)
+  def run_link(command, options \\ []), do: Core.run(:run_link, command, options)
 
   @doc """
   Starts an external command and returns a handle whose `:stream` field
@@ -211,9 +211,22 @@ defmodule ElixirExec do
       `:stream`. Defaults to `[]`. Note that `sync: true` is rejected —
       see Returns.
 
+  ## Options (in addition to all `run/2` options)
+
+    * `:delim` — non-empty binary used to split stdout into lines.
+      Default `"\\n"`. Each emitted line keeps its trailing delim. Any
+      incomplete tail at end-of-stream is emitted without a trailing
+      delim. Only meaningful here, where `stdout: :stream` is forced.
+
+    * `:drain` — boolean, default `true`. After enumeration ends, the
+      returned `enum` consumes one leftover `:DOWN` message left in the
+      caller's mailbox by the forced `monitor: true`. Set to `false` if
+      you want to receive that `:DOWN` yourself (e.g. for lifecycle
+      observability).
+
   ## Returns
 
-  `{:ok, %ElixirExec.OSProcess{stream: stream}}` on success. The
+  `{:ok, %ElixirExec.Handle{stream: stream}}` on success. The
   `:stream` is a regular Elixir enumerable (built from
   `Stream.unfold/2`) over each line the command writes to stdout, with
   the trailing `"\\n"` kept. Iteration ends cleanly when the program
@@ -227,7 +240,7 @@ defmodule ElixirExec do
 
   ## Examples
 
-      iex> {:ok, %ElixirExec.OSProcess{stream: stream}} =
+      iex> {:ok, %ElixirExec.Handle{stream: stream}} =
       ...>   ElixirExec.stream("for i in 1 2 3; do echo Iter\\$i; done")
       iex> Enum.to_list(stream)
       ["Iter1\\n", "Iter2\\n", "Iter3\\n"]
@@ -256,7 +269,7 @@ defmodule ElixirExec do
 
   ## Returns
 
-  `{:ok, %ElixirExec.OSProcess{}}` on success. From this point on the
+  `{:ok, %ElixirExec.Handle{}}` on success. From this point on the
   returned struct's `:controller` and `:os_pid` are valid for every
   `ElixirExec` control function (`stop/1`, `kill/2`, `write_stdin/2`,
   `os_pid/1`, etc.).
@@ -272,7 +285,7 @@ defmodule ElixirExec do
       # Spawn an unmanaged child via bash, then take it over:
       bash = System.find_executable("bash")
 
-      {:ok, %ElixirExec.OSProcess{os_pid: spawner_os_pid}} =
+      {:ok, %ElixirExec.Handle{os_pid: spawner_os_pid}} =
         ElixirExec.run([bash, "-c", "sleep 100 & echo $!"], stdout: true)
 
       sleep_os_pid =
@@ -282,7 +295,7 @@ defmodule ElixirExec do
             pid_int
         end
 
-      {:ok, %ElixirExec.OSProcess{controller: ctl}} =
+      {:ok, %ElixirExec.Handle{controller: ctl}} =
         ElixirExec.manage(sleep_os_pid)
 
       is_pid(ctl)
@@ -325,7 +338,7 @@ defmodule ElixirExec do
 
   ## Examples
 
-      {:ok, %ElixirExec.OSProcess{controller: pid}} =
+      {:ok, %ElixirExec.Handle{controller: pid}} =
         ElixirExec.run("sleep 10", monitor: true)
 
       :ok = ElixirExec.stop(pid)
@@ -356,7 +369,7 @@ defmodule ElixirExec do
 
   ## Examples
 
-      {:ok, %ElixirExec.OSProcess{controller: pid}} =
+      {:ok, %ElixirExec.Handle{controller: pid}} =
         ElixirExec.run("sleep 0.05", monitor: true)
 
       ElixirExec.stop_and_wait(pid, 1_000)
@@ -387,7 +400,7 @@ defmodule ElixirExec do
 
   ## Examples
 
-      {:ok, %ElixirExec.OSProcess{controller: pid, os_pid: os_pid}} =
+      {:ok, %ElixirExec.Handle{controller: pid, os_pid: os_pid}} =
         ElixirExec.run("sleep 10", monitor: true)
 
       :ok = ElixirExec.kill(os_pid, 9)
@@ -423,7 +436,7 @@ defmodule ElixirExec do
 
   ## Examples
 
-      {:ok, %ElixirExec.OSProcess{controller: cat_pid, os_pid: cat_os_pid}} =
+      {:ok, %ElixirExec.Handle{controller: cat_pid, os_pid: cat_os_pid}} =
         ElixirExec.run_link("cat", stdin: true, stdout: true)
 
       :ok = ElixirExec.write_stdin(cat_pid, "hi\\n")
@@ -462,7 +475,7 @@ defmodule ElixirExec do
       # Changing to an invalid gid raises an exit, not an error tuple:
       Process.flag(:trap_exit, true)
 
-      {:ok, %ElixirExec.OSProcess{os_pid: os_pid}} =
+      {:ok, %ElixirExec.Handle{os_pid: os_pid}} =
         ElixirExec.run_link("sleep 100")
 
       try do
@@ -496,7 +509,7 @@ defmodule ElixirExec do
 
   ## Examples
 
-      {:ok, %ElixirExec.OSProcess{controller: ctl, os_pid: os_pid}} =
+      {:ok, %ElixirExec.Handle{controller: ctl, os_pid: os_pid}} =
         ElixirExec.run_link("sleep 100", monitor: true)
 
       {:ok, ^os_pid} = ElixirExec.os_pid(ctl)
@@ -533,7 +546,7 @@ defmodule ElixirExec do
 
   ## Examples
 
-      {:ok, %ElixirExec.OSProcess{controller: ctl, os_pid: os_pid}} =
+      {:ok, %ElixirExec.Handle{controller: ctl, os_pid: os_pid}} =
         ElixirExec.run_link("sleep 100", monitor: true)
 
       {:ok, ^ctl} = ElixirExec.pid(os_pid)
@@ -568,7 +581,7 @@ defmodule ElixirExec do
 
   ## Examples
 
-      {:ok, %ElixirExec.OSProcess{os_pid: sleep_os_pid}} =
+      {:ok, %ElixirExec.Handle{os_pid: sleep_os_pid}} =
         ElixirExec.run_link("sleep 10")
 
       sleep_os_pid in ElixirExec.which_children()
@@ -692,7 +705,7 @@ defmodule ElixirExec do
 
   ## Examples
 
-      {:ok, %ElixirExec.OSProcess{controller: pid}} =
+      {:ok, %ElixirExec.Handle{controller: pid}} =
         ElixirExec.run("less /etc/hosts", pty: true, monitor: true)
 
       :ok = ElixirExec.winsz(pid, 24, 80)
@@ -721,7 +734,7 @@ defmodule ElixirExec do
 
   ## Examples
 
-      {:ok, %ElixirExec.OSProcess{controller: pid}} =
+      {:ok, %ElixirExec.Handle{controller: pid}} =
         ElixirExec.run("cat", pty: true, stdin: true, monitor: true)
 
       :ok = ElixirExec.pty_opts(pid, echo: false)
@@ -756,14 +769,14 @@ defmodule ElixirExec do
   `{:exit, status}` when the program has exited; `status` is the
   decoded exit reason — `0` for `:normal`, the integer code for
   `{:exit_status, n}`, or the raw reason for anything else (see
-  `ElixirExec.OSProcess.decode_reason/1`).
+  `ElixirExec.Handle.decode_reason/1`).
 
   `:timeout` when nothing arrives within `timeout` milliseconds. The
   call does not consume any non-matching messages from the mailbox.
 
   ## Examples
 
-      iex> {:ok, %ElixirExec.OSProcess{os_pid: os_pid}} =
+      iex> {:ok, %ElixirExec.Handle{os_pid: os_pid}} =
       ...>   ElixirExec.run("echo hi", monitor: true, stdout: true)
       iex> {:stdout, "hi\\n"} = ElixirExec.receive_output(os_pid, 1_000)
       iex> {:exit, 0} = ElixirExec.receive_output(os_pid, 1_000)
@@ -801,7 +814,7 @@ defmodule ElixirExec do
   ## Returns
 
   `{:ok, status}` once the program has exited; `status` is the
-  decoded exit reason (see `ElixirExec.OSProcess.decode_reason/1`).
+  decoded exit reason (see `ElixirExec.Handle.decode_reason/1`).
 
   `{:error, :timeout}` if the program is still alive when `timeout`
   milliseconds pass.
@@ -814,7 +827,7 @@ defmodule ElixirExec do
 
   ## Examples
 
-      iex> {:ok, %ElixirExec.OSProcess{os_pid: os_pid}} =
+      iex> {:ok, %ElixirExec.Handle{os_pid: os_pid}} =
       ...>   ElixirExec.run("sleep 0.05", monitor: true)
       iex> ElixirExec.await_exit(os_pid, 1_000)
       {:ok, 0}

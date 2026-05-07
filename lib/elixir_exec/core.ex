@@ -1,4 +1,4 @@
-defmodule ElixirExec.Runner do
+defmodule ElixirExec.Core do
   @moduledoc """
   Internal — does the actual work of running a command for `ElixirExec`.
 
@@ -15,7 +15,7 @@ defmodule ElixirExec.Runner do
     3. The call is dispatched to `:exec.run/2` or `:exec.run_link/2`,
        depending on whether the caller wants a linked process or not.
     4. The response is wrapped into one of the public structs:
-       `%ElixirExec.OSProcess{}` for a background run, or
+       `%ElixirExec.Handle{}` for a background run, or
        `%ElixirExec.Output{}` for a synchronous one.
 
   If the caller asked for `stdout: :stream`, this module also starts a
@@ -27,9 +27,9 @@ defmodule ElixirExec.Runner do
 
   ## What `run/3` returns
 
-    * `{:ok, %ElixirExec.OSProcess{stream: nil}}` — normal background
+    * `{:ok, %ElixirExec.Handle{stream: nil}}` — normal background
       run.
-    * `{:ok, %ElixirExec.OSProcess{stream: enum}}` — background run
+    * `{:ok, %ElixirExec.Handle{stream: enum}}` — background run
       with streaming output.
     * `{:ok, %ElixirExec.Output{}}` — synchronous run.
     * `{:error, reason}` — option validation failed or `:erlexec`
@@ -37,7 +37,7 @@ defmodule ElixirExec.Runner do
   """
 
   alias ElixirExec.{Options, Output, Stream, StreamSupervisor}
-  alias ElixirExec.OSProcess, as: ExProcess
+  alias ElixirExec.Handle, as: ExProcess
 
   @typedoc "Which `:exec` start function to call."
   @type kind :: :run | :run_link
@@ -70,10 +70,10 @@ defmodule ElixirExec.Runner do
   @spec run(kind(), command(), keyword()) :: result()
   def run(kind, command, options) when kind in [:run, :run_link] do
     with {:ok, validated} <- Options.validate_command(options) do
-      {validated, stream_handle} = maybe_swap_stream(validated)
+      {rewritten, stream_handle} = maybe_swap_stream(validated)
       erl_cmd = Options.to_erl_command(command)
-      erl_opts = Options.to_erl_command_options(validated)
-      finalize(dispatch(kind, erl_cmd, erl_opts), stream_handle)
+      erl_opts = Options.to_erl_command_options(rewritten)
+      finalize(dispatch(kind, erl_cmd, erl_opts), stream_handle, validated)
     end
   end
 
@@ -100,7 +100,8 @@ defmodule ElixirExec.Runner do
   defp maybe_swap_stream(opts) do
     case Keyword.get(opts, :stdout) do
       :stream ->
-        {:ok, server, enum} = StreamSupervisor.start_stream(:lines)
+        delim = Keyword.fetch!(opts, :delim)
+        {:ok, server, enum} = StreamSupervisor.start_stream(:lines, delim: delim)
         new_opts = Keyword.put(opts, :stdout, server)
         {new_opts, {server, enum}}
 
@@ -115,16 +116,27 @@ defmodule ElixirExec.Runner do
 
   # Async + stream wired in: attach the worker to the port pid (synchronous
   # call so the monitor is installed before we return), then surface the
-  # struct with the live enum.
-  @spec finalize(term(), stream_handle()) :: result()
-  defp finalize({:ok, pid, os_pid}, {server, enum})
+  # struct with the live enum. When `:drain` is true (the schema default),
+  # wrap the enum with `ElixirExec.Stream.Drain.attach/2` so iteration's
+  # finalizer drains the caller-side `:DOWN` left in the mailbox by the
+  # forced `monitor: true`.
+  @spec finalize(term(), stream_handle(), keyword()) :: result()
+  defp finalize({:ok, pid, os_pid}, {server, enum}, validated)
        when is_pid(pid) and is_integer(os_pid) do
     :ok = Stream.attach(server, pid)
+
+    enum =
+      if Keyword.fetch!(validated, :drain) do
+        ElixirExec.Stream.Drain.attach(enum, os_pid)
+      else
+        enum
+      end
+
     {:ok, %ExProcess{controller: pid, os_pid: os_pid, stream: enum}}
   end
 
   # Async, no stream: just wrap the controller pid and OS pid into a struct.
-  defp finalize({:ok, pid, os_pid}, nil)
+  defp finalize({:ok, pid, os_pid}, nil, _validated)
        when is_pid(pid) and is_integer(os_pid) do
     {:ok, %ExProcess{controller: pid, os_pid: os_pid}}
   end
@@ -132,16 +144,16 @@ defmodule ElixirExec.Runner do
   # Sync (`sync: true` was set; `:exec` returns the captured proplist).
   # `stream_handle` is always `nil` here because the
   # `sync: true` + `stdout: :stream` combination is rejected upstream.
-  defp finalize({:ok, proplist}, nil) when is_list(proplist) do
+  defp finalize({:ok, proplist}, nil, _validated) when is_list(proplist) do
     {:ok, Output.from_proplist(proplist)}
   end
 
   # Error from `:exec` with no stream worker started: surface unchanged.
-  defp finalize({:error, _} = err, nil), do: err
+  defp finalize({:error, _} = err, nil, _validated), do: err
 
   # Error from `:exec` after a stream worker was started: tear the worker
   # down so it doesn't leak, then surface the error.
-  defp finalize({:error, _} = err, {server, _enum}) do
+  defp finalize({:error, _} = err, {server, _enum}, _validated) do
     :ok = Stream.stop(server)
     err
   end

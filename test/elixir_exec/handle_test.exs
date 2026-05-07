@@ -1,13 +1,13 @@
-defmodule ElixirExec.OSProcessTest do
+defmodule ElixirExec.HandleTest do
   use ExUnit.Case, async: true
 
-  alias ElixirExec.OSProcess, as: ExProcess
+  alias ElixirExec.Handle, as: ExProcess
 
   # ----------------------------------------------------------------------
   # Struct construction
   # ----------------------------------------------------------------------
 
-  describe "%ElixirExec.OSProcess{}" do
+  describe "%ElixirExec.Handle{}" do
     test "builds with the required keys and a nil :stream by default" do
       controller = self()
       proc = %ExProcess{controller: controller, os_pid: 12_345}
@@ -27,7 +27,7 @@ defmodule ElixirExec.OSProcessTest do
     test "raises ArgumentError when :controller is missing" do
       assert_raise ArgumentError, fn ->
         Code.eval_string(
-          "%ElixirExec.OSProcess{os_pid: 1}",
+          "%ElixirExec.Handle{os_pid: 1}",
           [],
           __ENV__
         )
@@ -37,7 +37,7 @@ defmodule ElixirExec.OSProcessTest do
     test "raises ArgumentError when :os_pid is missing" do
       assert_raise ArgumentError, fn ->
         Code.eval_string(
-          "%ElixirExec.OSProcess{controller: self()}",
+          "%ElixirExec.Handle{controller: self()}",
           [self: self()],
           __ENV__
         )

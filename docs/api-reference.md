@@ -10,7 +10,7 @@ Every public function on `ElixirExec` with its signature, return shape, and the 
 - **Identity round-trips** — [`os_pid/1`](#os_pid1), [`pid/1`](#pid1), [`which_children/0`](#which_children0)
 - **Decoding exit codes and signals** — [`status/1`](#status1), [`signal/1`](#signal1), [`signal_to_int/1`](#signal_to_int1)
 - **Receive helpers (mailbox protocol)** — [`receive_output/2`](#receive_output2), [`await_exit/2`](#await_exit2)
-- **Result structs** — [`%ElixirExec.OSProcess{}`](#elixirexecosprocess), [`%ElixirExec.Output{}`](#elixirexecoutput)
+- **Result structs** — [`%ElixirExec.Handle{}`](#elixirexecosprocess), [`%ElixirExec.Output{}`](#elixirexecoutput)
 
 For every option accepted by `run/2`, `run_link/2`, `stream/2`, and `manage/2`, see [`configuration-guide.md`](configuration-guide.md).
 
@@ -22,15 +22,15 @@ For every option accepted by `run/2`, `run_link/2`, `stream/2`, and `manage/2`, 
 
 ```elixir
 @spec run(command(), command_options()) ::
-        {:ok, ElixirExec.OSProcess.t()} | {:ok, ElixirExec.Output.t()} | {:error, term()}
+        {:ok, ElixirExec.Handle.t()} | {:ok, ElixirExec.Output.t()} | {:error, term()}
 def run(command, options \\ [])
 ```
 
-Starts an external command. `sync: true` blocks until exit and returns `%Output{}` with captured stdout/stderr. Without `sync: true`, returns immediately with `%OSProcess{}` carrying the `:controller` pid and `:os_pid`.
+Starts an external command. `sync: true` blocks until exit and returns `%Output{}` with captured stdout/stderr. Without `sync: true`, returns immediately with `%Handle{}` carrying the `:controller` pid and `:os_pid`.
 
 Returns:
 
-- `{:ok, %ElixirExec.OSProcess{}}` — async start.
+- `{:ok, %ElixirExec.Handle{}}` — async start.
 - `{:ok, %ElixirExec.Output{}}` — when `sync: true`.
 - `{:error, %NimbleOptions.ValidationError{}}` — option validation failed; no process started.
 - `{:error, {:illegal_combination, :sync_with_stream}}` — `sync: true` and `stdout: :stream` together are rejected.
@@ -40,7 +40,7 @@ Returns:
 
 ```elixir
 @spec run_link(command(), command_options()) ::
-        {:ok, ElixirExec.OSProcess.t()} | {:ok, ElixirExec.Output.t()} | {:error, term()}
+        {:ok, ElixirExec.Handle.t()} | {:ok, ElixirExec.Output.t()} | {:error, term()}
 ```
 
 Identical to `run/2` but **links** the calling process to the controller pid. When the controller exits, the caller gets an `:EXIT` message (or crashes if it isn't trapping exits). Pair with `Process.flag(:trap_exit, true)` if abnormal exits should not bring down the caller.
@@ -49,10 +49,10 @@ Identical to `run/2` but **links** the calling process to the controller pid. Wh
 
 ```elixir
 @spec stream(command(), command_options()) ::
-        {:ok, ElixirExec.OSProcess.t()} | {:error, term()}
+        {:ok, ElixirExec.Handle.t()} | {:error, term()}
 ```
 
-Convenience wrapper that forces `monitor: true` and `stdout: :stream`, then calls `run/2`. The returned `%OSProcess{}.stream` is an `Enumerable` over each line written to stdout (newline kept). Works with `Enum`, `Stream`, `Enum.take/2`, and other early-termination patterns.
+Convenience wrapper that forces `monitor: true` and `stdout: :stream`, then calls `run/2`. The returned `%Handle{}.stream` is an `Enumerable` over each line written to stdout (newline kept). Works with `Enum`, `Stream`, `Enum.take/2`, and other early-termination patterns.
 
 `sync: true` is rejected with `{:error, {:illegal_combination, :sync_with_stream}}`.
 
@@ -60,10 +60,10 @@ Convenience wrapper that forces `monitor: true` and `stdout: :stream`, then call
 
 ```elixir
 @spec manage(os_pid() | port(), command_options()) ::
-        {:ok, ElixirExec.OSProcess.t()} | {:error, term()}
+        {:ok, ElixirExec.Handle.t()} | {:error, term()}
 ```
 
-Adopts a process or port that was started outside this library so it can be controlled with the same API. Bypasses `Runner` and goes straight to `:exec.manage`. Streaming is not supported for adopted processes.
+Adopts a process or port that was started outside this library so it can be controlled with the same API. Bypasses `Core` and goes straight to `:exec.manage`. Streaming is not supported for adopted processes.
 
 ---
 
@@ -233,7 +233,7 @@ The two helpers below pull these from your mailbox.
 def receive_output(os_pid, timeout \\ 5_000)
 ```
 
-Pulls **the next** matching message for `os_pid`. Decodes `:DOWN` reasons via `OSProcess.decode_reason/1` (so a normal exit becomes `{:exit, 0}`, an exit-status tuple becomes `{:exit, n}`, and anything else passes through). Non-matching mailbox messages are not consumed.
+Pulls **the next** matching message for `os_pid`. Decodes `:DOWN` reasons via `Handle.decode_reason/1` (so a normal exit becomes `{:exit, 0}`, an exit-status tuple becomes `{:exit, n}`, and anything else passes through). Non-matching mailbox messages are not consumed.
 
 ### `await_exit/2`
 
@@ -249,7 +249,7 @@ Waits for the program to exit, **discarding** any stdout/stderr messages that ar
 
 ## Result structs
 
-### `%ElixirExec.OSProcess{}`
+### `%ElixirExec.Handle{}`
 
 Returned from async runs. Defined in `lib/elixir_exec/os_process.ex`.
 
@@ -259,7 +259,7 @@ Returned from async runs. Defined in `lib/elixir_exec/os_process.ex`.
 | `:os_pid` | `non_neg_integer()` | The operating-system pid (the same number you'd see in `ps`). |
 | `:stream` | `nil \| Enumerable.t()` | Set when `stdout: :stream` was passed (which `stream/2` does implicitly); otherwise `nil`. |
 
-`ElixirExec.OSProcess.decode_reason/1` is exposed as a helper:
+`ElixirExec.Handle.decode_reason/1` is exposed as a helper:
 
 ```elixir
 decode_reason(:normal)              # => 0

@@ -160,6 +160,64 @@ defmodule ElixirExec.Stream.BufferTest do
   # :lines mode
   # ---------------------------------------------------------------------------
 
+  describe ":lines mode with custom delim (new/2)" do
+    test "default delim is \"\\n\"" do
+      buffer = Buffer.new(:lines)
+      buffer = Buffer.ingest_stdout(buffer, "foo\nbar\n")
+      assert {:ok, "foo\n", buffer} = Buffer.pop(buffer)
+      assert {:ok, "bar\n", buffer} = Buffer.pop(buffer)
+      assert :empty = Buffer.pop(buffer)
+    end
+
+    test "single-char delim splits and re-appends" do
+      buffer = Buffer.new(:lines, delim: "|")
+      buffer = Buffer.ingest_stdout(buffer, "a|b|c|")
+      assert {:ok, "a|", buffer} = Buffer.pop(buffer)
+      assert {:ok, "b|", buffer} = Buffer.pop(buffer)
+      assert {:ok, "c|", buffer} = Buffer.pop(buffer)
+      assert :empty = Buffer.pop(buffer)
+      assert buffer.partial === ""
+    end
+
+    test "trailing partial held until mark_done with custom delim" do
+      buffer = :lines |> Buffer.new(delim: "|") |> Buffer.ingest_stdout("a|b|c")
+      assert {:ok, "a|", buffer} = Buffer.pop(buffer)
+      assert {:ok, "b|", buffer} = Buffer.pop(buffer)
+      assert :empty = Buffer.pop(buffer)
+      assert buffer.partial === "c"
+
+      buffer = Buffer.mark_done(buffer)
+      assert {:ok, "c", buffer} = Buffer.pop(buffer)
+      assert Buffer.exhausted?(buffer)
+    end
+
+    test "multi-char delim (\\r\\n)" do
+      buffer = Buffer.new(:lines, delim: "\r\n")
+      buffer = Buffer.ingest_stdout(buffer, "x\r\ny\r\nz")
+      assert {:ok, "x\r\n", buffer} = Buffer.pop(buffer)
+      assert {:ok, "y\r\n", buffer} = Buffer.pop(buffer)
+      assert :empty = Buffer.pop(buffer)
+      assert buffer.partial === "z"
+    end
+
+    test "empty delim raises ArgumentError" do
+      assert_raise ArgumentError, ~r/non-empty binary/, fn ->
+        Buffer.new(:lines, delim: "")
+      end
+    end
+
+    test "non-binary delim raises ArgumentError" do
+      assert_raise ArgumentError, ~r/non-empty binary/, fn ->
+        Buffer.new(:lines, delim: :newline)
+      end
+    end
+
+    test "new/1 still works (backwards compat) and uses default delim" do
+      buffer = Buffer.new(:lines)
+      assert buffer.delim === "\n"
+    end
+  end
+
   describe ":lines mode ingest_stdout/2" do
     test "ignores stderr data" do
       buffer =

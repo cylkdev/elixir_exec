@@ -1,4 +1,4 @@
-defmodule ElixirExec.RunnerTest do
+defmodule ElixirExec.CoreTest do
   # `async: false` is mandatory: every integration test starts real OS
   # processes and relies on the order of messages arriving in the test
   # process's mailbox. Running in parallel would interleave those messages
@@ -7,8 +7,8 @@ defmodule ElixirExec.RunnerTest do
   use ExUnit.Case, async: false
 
   alias ElixirExec.Output
-  alias ElixirExec.OSProcess, as: ExProcess
-  alias ElixirExec.Runner
+  alias ElixirExec.Handle, as: ExProcess
+  alias ElixirExec.Core
   alias ElixirExec.StreamSupervisor
 
   # ---------------------------------------------------------------------------
@@ -33,11 +33,11 @@ defmodule ElixirExec.RunnerTest do
   describe "run/3 validation" do
     test "rejects unknown options with a NimbleOptions ValidationError" do
       assert {:error, %NimbleOptions.ValidationError{}} =
-               Runner.run(:run, "ls", bogus_key: 1)
+               Core.run(:run, "ls", bogus_key: 1)
     end
 
     test "rejects sync: true with stdout: :stream as illegal combination" do
-      assert Runner.run(:run, "echo hi", sync: true, stdout: :stream) ===
+      assert Core.run(:run, "echo hi", sync: true, stdout: :stream) ===
                {:error, {:illegal_combination, :sync_with_stream}}
     end
   end
@@ -47,9 +47,9 @@ defmodule ElixirExec.RunnerTest do
   # ---------------------------------------------------------------------------
 
   describe "run/3 async with :run" do
-    test "returns %ElixirExec.OSProcess{} struct with controller, os_pid, and nil stream" do
+    test "returns %ElixirExec.Handle{} struct with controller, os_pid, and nil stream" do
       assert {:ok, %ExProcess{} = process} =
-               Runner.run(:run, "echo hi", monitor: true, stdout: true)
+               Core.run(:run, "echo hi", monitor: true, stdout: true)
 
       assert is_pid(process.controller)
       assert is_integer(process.os_pid)
@@ -59,7 +59,7 @@ defmodule ElixirExec.RunnerTest do
 
     test "delivers {:stdout, _, _} and DOWN messages to the test mailbox" do
       assert {:ok, %ExProcess{controller: pid, os_pid: os_pid, stream: nil}} =
-               Runner.run(:run, "echo hi", monitor: true, stdout: true)
+               Core.run(:run, "echo hi", monitor: true, stdout: true)
 
       assert_receive {:stdout, ^os_pid, "hi\n"}, 1_000
       assert_receive {:DOWN, ^os_pid, :process, ^pid, _reason}, 1_000
@@ -71,11 +71,11 @@ defmodule ElixirExec.RunnerTest do
   # ---------------------------------------------------------------------------
 
   describe "run/3 async with :run_link" do
-    test "returns %ElixirExec.OSProcess{} when linking" do
+    test "returns %ElixirExec.Handle{} when linking" do
       Process.flag(:trap_exit, true)
 
       assert {:ok, %ExProcess{controller: pid, os_pid: os_pid, stream: nil}} =
-               Runner.run(:run_link, "true", [])
+               Core.run(:run_link, "true", [])
 
       assert is_pid(pid)
       assert is_integer(os_pid)
@@ -97,7 +97,7 @@ defmodule ElixirExec.RunnerTest do
   describe "run/3 sync" do
     test "returns %ElixirExec.Output{} with captured stdout" do
       assert {:ok, %Output{stdout: ["hi\n"], stderr: []}} =
-               Runner.run(:run, "echo hi", sync: true, stdout: true)
+               Core.run(:run, "echo hi", sync: true, stdout: true)
     end
   end
 
@@ -106,9 +106,9 @@ defmodule ElixirExec.RunnerTest do
   # ---------------------------------------------------------------------------
 
   describe "run/3 stream" do
-    test "returns %ElixirExec.OSProcess{} whose stream yields stdout lines" do
+    test "returns %ElixirExec.Handle{} whose stream yields stdout lines" do
       assert {:ok, %ExProcess{stream: enum} = process} =
-               Runner.run(
+               Core.run(
                  :run,
                  "for i in 1 2 3; do echo Iter$i; done",
                  monitor: true,
@@ -131,7 +131,7 @@ defmodule ElixirExec.RunnerTest do
         |> MapSet.new()
 
       assert {:ok, %ExProcess{stream: enum}} =
-               Runner.run(
+               Core.run(
                  :run,
                  "for i in 1 2 3; do echo Iter$i; done",
                  monitor: true,

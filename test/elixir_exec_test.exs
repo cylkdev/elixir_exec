@@ -15,7 +15,7 @@ defmodule ElixirExecTest do
 
   describe "kill/2" do
     test "kill via os_pid sends DOWN with exit_status 9" do
-      {:ok, %ElixirExec.OSProcess{controller: sleep_pid, os_pid: sleep_os_pid}} =
+      {:ok, %ElixirExec.Handle{controller: sleep_pid, os_pid: sleep_os_pid}} =
         ElixirExec.run("sleep 10", monitor: true)
 
       assert :ok = ElixirExec.kill(sleep_os_pid, 9)
@@ -24,7 +24,7 @@ defmodule ElixirExecTest do
     end
 
     test "accepts atom signal :sigkill (routed through signal_to_int)" do
-      {:ok, %ElixirExec.OSProcess{controller: sleep_pid, os_pid: sleep_os_pid}} =
+      {:ok, %ElixirExec.Handle{controller: sleep_pid, os_pid: sleep_os_pid}} =
         ElixirExec.run("sleep 10", monitor: true)
 
       assert :ok = ElixirExec.kill(sleep_os_pid, :sigkill)
@@ -37,7 +37,7 @@ defmodule ElixirExecTest do
     test "manages a pre-existing OS pid through its lifecycle" do
       bash = System.find_executable("bash")
 
-      {:ok, %ElixirExec.OSProcess{os_pid: spawner_os_pid}} =
+      {:ok, %ElixirExec.Handle{os_pid: spawner_os_pid}} =
         ElixirExec.run([bash, "-c", "sleep 100 & echo $!"], stdout: true)
 
       sleep_os_pid =
@@ -49,7 +49,7 @@ defmodule ElixirExecTest do
           1_000 -> flunk("did not receive sleep child pid on stdout")
         end
 
-      {:ok, %ElixirExec.OSProcess{controller: sleep_pid, os_pid: ^sleep_os_pid}} =
+      {:ok, %ElixirExec.Handle{controller: sleep_pid, os_pid: ^sleep_os_pid}} =
         ElixirExec.manage(sleep_os_pid)
 
       assert is_pid(sleep_pid)
@@ -59,7 +59,7 @@ defmodule ElixirExecTest do
       # Give the OS a moment to reap.
       Process.sleep(100)
 
-      {:ok, %ElixirExec.OSProcess{os_pid: ps_os_pid}} =
+      {:ok, %ElixirExec.Handle{os_pid: ps_os_pid}} =
         ElixirExec.run("ps -p #{sleep_os_pid}", stdout: true)
 
       stdout =
@@ -75,7 +75,7 @@ defmodule ElixirExecTest do
 
   describe "os_pid/1" do
     test "round-trips and surfaces {:error, _} from :exec.ospid/1" do
-      {:ok, %ElixirExec.OSProcess{controller: sleep_pid, os_pid: sleep_os_pid}} =
+      {:ok, %ElixirExec.Handle{controller: sleep_pid, os_pid: sleep_os_pid}} =
         ElixirExec.run_link("sleep 100")
 
       assert ElixirExec.os_pid(sleep_pid) === {:ok, sleep_os_pid}
@@ -95,7 +95,7 @@ defmodule ElixirExecTest do
 
   describe "pid/1" do
     test "round-trips and normalizes :undefined to {:error, :undefined}" do
-      {:ok, %ElixirExec.OSProcess{controller: sleep_pid, os_pid: sleep_os_pid}} =
+      {:ok, %ElixirExec.Handle{controller: sleep_pid, os_pid: sleep_os_pid}} =
         ElixirExec.run_link("sleep 100")
 
       assert ElixirExec.pid(sleep_os_pid) === {:ok, sleep_pid}
@@ -119,7 +119,7 @@ defmodule ElixirExecTest do
       # `{:exit_status, 256}` from killing the test process.
       Process.flag(:trap_exit, true)
 
-      {:ok, %ElixirExec.OSProcess{controller: pid, os_pid: os_pid}} =
+      {:ok, %ElixirExec.Handle{controller: pid, os_pid: os_pid}} =
         ElixirExec.run_link(
           "echo $FOO; false",
           stdout: true,
@@ -133,7 +133,7 @@ defmodule ElixirExecTest do
 
   describe "write_stdin/2" do
     test "writes data to the child's stdin and reads echo on stdout" do
-      {:ok, %ElixirExec.OSProcess{controller: cat_pid, os_pid: cat_os_pid}} =
+      {:ok, %ElixirExec.Handle{controller: cat_pid, os_pid: cat_os_pid}} =
         ElixirExec.run_link("cat", stdin: true, stdout: true)
 
       assert :ok = ElixirExec.write_stdin(cat_pid, "hi\n")
@@ -150,7 +150,7 @@ defmodule ElixirExecTest do
     test "calls through to :exec.setpgid/2 (raises on invalid gid)" do
       Process.flag(:trap_exit, true)
 
-      {:ok, %ElixirExec.OSProcess{os_pid: sleep_os_pid}} = ElixirExec.run_link("sleep 100")
+      {:ok, %ElixirExec.Handle{os_pid: sleep_os_pid}} = ElixirExec.run_link("sleep 100")
 
       capture_log(fn ->
         try do
@@ -179,7 +179,7 @@ defmodule ElixirExecTest do
 
   describe "which_children/0" do
     test "includes a running OS pid" do
-      {:ok, %ElixirExec.OSProcess{os_pid: sleep_os_pid}} = ElixirExec.run_link("sleep 10")
+      {:ok, %ElixirExec.Handle{os_pid: sleep_os_pid}} = ElixirExec.run_link("sleep 10")
 
       assert sleep_os_pid in ElixirExec.which_children()
 
@@ -205,14 +205,14 @@ defmodule ElixirExecTest do
 
   describe "stream/2" do
     test "produces all stdout lines via Enum.to_list/1" do
-      {:ok, %ElixirExec.OSProcess{stream: stream}} =
+      {:ok, %ElixirExec.Handle{stream: stream}} =
         ElixirExec.stream("for i in 1 2 3; do echo Iter$i; done", [])
 
       assert Enum.to_list(stream) === ["Iter1\n", "Iter2\n", "Iter3\n"]
     end
 
     test "supports Enum.take/2 (early termination)" do
-      {:ok, %ElixirExec.OSProcess{stream: stream}} =
+      {:ok, %ElixirExec.Handle{stream: stream}} =
         ElixirExec.stream(
           "for i in 1 2 3 4 5; do echo Iter$i; sleep 0.01; done",
           []
@@ -222,7 +222,7 @@ defmodule ElixirExecTest do
     end
 
     test "stopping the stream early shuts down the server pid" do
-      {:ok, %ElixirExec.OSProcess{stream: stream}} =
+      {:ok, %ElixirExec.Handle{stream: stream}} =
         ElixirExec.stream(
           "for i in 1 2 3 4 5; do echo Iter$i; sleep 0.01; done",
           []
@@ -246,6 +246,29 @@ defmodule ElixirExecTest do
       assert {:error, {:illegal_combination, :sync_with_stream}} =
                ElixirExec.stream("echo hi", sync: true)
     end
+
+    test "honors :delim by splitting stdout on the configured delimiter" do
+      {:ok, %ElixirExec.Handle{stream: enum}} =
+        ElixirExec.stream(["printf", "a|b|c|"], stderr: :stdout, delim: "|")
+
+      assert Enum.to_list(enum) === ["a|", "b|", "c|"]
+    end
+
+    test "drains the caller's :DOWN by default after enumeration ends" do
+      {:ok, %ElixirExec.Handle{stream: enum, os_pid: os_pid}} =
+        ElixirExec.stream("printf 'hi\n'")
+
+      _ = Enum.to_list(enum)
+      refute_receive {:DOWN, ^os_pid, :process, _, _}, 200
+    end
+
+    test "leaves :DOWN in the caller's mailbox when drain: false" do
+      {:ok, %ElixirExec.Handle{stream: enum, os_pid: os_pid}} =
+        ElixirExec.stream("printf 'hi\n'", drain: false)
+
+      _ = Enum.to_list(enum)
+      assert_receive {:DOWN, ^os_pid, :process, _, _}, 1_000
+    end
   end
 
   # ---------------------------------------------------------------------------
@@ -267,7 +290,7 @@ defmodule ElixirExecTest do
 
   describe "receive_output/2" do
     test "happy path: yields {:stdout, data} then {:exit, 0}" do
-      {:ok, %ElixirExec.OSProcess{os_pid: os_pid}} =
+      {:ok, %ElixirExec.Handle{os_pid: os_pid}} =
         ElixirExec.run("echo hi", monitor: true, stdout: true)
 
       assert {:stdout, "hi\n"} = ElixirExec.receive_output(os_pid, 1_000)
@@ -285,14 +308,14 @@ defmodule ElixirExecTest do
 
   describe "await_exit/2" do
     test "happy path: returns {:ok, 0} after the child exits cleanly" do
-      {:ok, %ElixirExec.OSProcess{os_pid: os_pid}} =
+      {:ok, %ElixirExec.Handle{os_pid: os_pid}} =
         ElixirExec.run("sleep 0.05", monitor: true)
 
       assert {:ok, 0} = ElixirExec.await_exit(os_pid, 1_000)
     end
 
     test "returns {:error, :timeout} when child outlives the timeout" do
-      {:ok, %ElixirExec.OSProcess{os_pid: os_pid}} =
+      {:ok, %ElixirExec.Handle{os_pid: os_pid}} =
         ElixirExec.run("sleep 5", monitor: true)
 
       assert {:error, :timeout} = ElixirExec.await_exit(os_pid, 100)

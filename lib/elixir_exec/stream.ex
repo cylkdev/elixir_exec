@@ -32,10 +32,12 @@ defmodule ElixirExec.Stream do
 
   Each worker is started in one mode, picked once at construction:
 
-    * `:lines` — read stdout, splitting on `"\\n"`. Each complete line
-      keeps its trailing newline. Any unfinished tail is held back
-      until either more stdout arrives or the program exits — on exit,
-      a non-empty tail is emitted as the final element.
+    * `:lines` — read stdout, splitting on the configured delim
+      (default `"\\n"`, override with `start_link(:lines, delim: ...)`).
+      Each complete line keeps its trailing delim. Any unfinished tail
+      is held back until either more stdout arrives or the program
+      exits — on exit, a non-empty tail is emitted as the final
+      element (without a trailing delim).
     * `:chunks` — read stdout, emitting each chunk exactly as it
       arrived from the program.
     * `:stderr` — like `:chunks` but for stderr.
@@ -59,14 +61,28 @@ defmodule ElixirExec.Stream do
   Start a linked stream server in `mode` and return the server pid plus an
   `Enumerable.t()` backed by `Stream.unfold/2`.
 
+  Three call shapes are supported:
+
+    * `start_link(mode)` — start with default options.
+    * `start_link(mode, opts)` — pass options. In `:lines` mode, `:delim`
+      (a non-empty binary, default `"\\n"`) controls how stdout is split
+      into lines.
+    * `start_link({mode, opts})` — tuple form for use with the default
+      `child_spec/1` (e.g. `Supervisor.child_spec({__MODULE__, {mode,
+      opts}}, ...)`).
+
   The caller (or whoever owns the erlexec process) is responsible for
   delivering `{:stdout, _, _}` / `{:stderr, _, _}` messages to `server`.
   Once the controlling port pid is wired in via `attach/2`, its `:DOWN`
   message will signal end-of-stream after the buffer drains.
   """
-  @spec start_link(mode()) :: {:ok, pid(), Enumerable.t()}
-  def start_link(mode) when mode in [:lines, :chunks, :stderr, :merged] do
-    {:ok, pid} = GenServer.start_link(__MODULE__, mode)
+  @spec start_link({mode(), keyword()} | mode()) :: {:ok, pid(), Enumerable.t()}
+  def start_link({mode, opts}) when is_list(opts), do: start_link(mode, opts)
+  def start_link(mode) when is_atom(mode), do: start_link(mode, [])
+
+  @spec start_link(mode(), keyword()) :: {:ok, pid(), Enumerable.t()}
+  def start_link(mode, opts) when mode in [:lines, :chunks, :stderr, :merged] and is_list(opts) do
+    {:ok, pid} = GenServer.start_link(__MODULE__, {mode, opts})
     enum = Stream.unfold(pid, &next_element/1)
     {:ok, pid, enum}
   end
@@ -119,8 +135,8 @@ defmodule ElixirExec.Stream do
   # ---------------------------------------------------------------------------
 
   @impl true
-  def init(mode) do
-    {:ok, Buffer.new(mode)}
+  def init({mode, opts}) do
+    {:ok, Buffer.new(mode, opts)}
   end
 
   # --- attach (synchronous; installs monitor before replying) ---------------

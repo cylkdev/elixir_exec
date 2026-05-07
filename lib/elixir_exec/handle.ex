@@ -1,4 +1,4 @@
-defmodule ElixirExec.OSProcess do
+defmodule ElixirExec.Handle do
   @moduledoc """
   A handle to a running external program.
 
@@ -28,16 +28,16 @@ defmodule ElixirExec.OSProcess do
   else — like `:killed` — is returned unchanged so you can decide what
   to do with it.
 
-      iex> ElixirExec.OSProcess.decode_reason(:normal)
+      iex> ElixirExec.Handle.decode_reason(:normal)
       0
 
-      iex> ElixirExec.OSProcess.decode_reason({:exit_status, 9})
+      iex> ElixirExec.Handle.decode_reason({:exit_status, 9})
       9
 
-      iex> ElixirExec.OSProcess.decode_reason({:exit_status, 0})
+      iex> ElixirExec.Handle.decode_reason({:exit_status, 0})
       0
 
-      iex> ElixirExec.OSProcess.decode_reason(:killed)
+      iex> ElixirExec.Handle.decode_reason(:killed)
       :killed
   """
 
@@ -73,16 +73,16 @@ defmodule ElixirExec.OSProcess do
 
   ## Examples
 
-      iex> ElixirExec.OSProcess.decode_reason(:normal)
+      iex> ElixirExec.Handle.decode_reason(:normal)
       0
 
-      iex> ElixirExec.OSProcess.decode_reason({:exit_status, 9})
+      iex> ElixirExec.Handle.decode_reason({:exit_status, 9})
       9
 
-      iex> ElixirExec.OSProcess.decode_reason({:exit_status, 0})
+      iex> ElixirExec.Handle.decode_reason({:exit_status, 0})
       0
 
-      iex> ElixirExec.OSProcess.decode_reason(:killed)
+      iex> ElixirExec.Handle.decode_reason(:killed)
       :killed
   """
   @spec decode_reason(term()) :: non_neg_integer() | term()

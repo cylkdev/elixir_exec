@@ -21,7 +21,7 @@ Full text in `RULES.md`. Key rules contributors must follow:
 ### Module documentation
 
 - Every public module has a `@moduledoc` written from the **caller's** point of view: what it's for, when to use it, and what shapes it accepts and returns.
-- Internal modules use `@moduledoc false` and a short comment block explaining their role. Examples: `ElixirExec.Options`, `ElixirExec.Runner`, `ElixirExec.Stream`, `ElixirExec.StreamSupervisor`, `ElixirExec.Stream.Buffer`.
+- Internal modules use `@moduledoc false` and a short comment block explaining their role. Examples: `ElixirExec.Options`, `ElixirExec.Core`, `ElixirExec.Stream`, `ElixirExec.StreamSupervisor`, `ElixirExec.Stream.Buffer`.
 - `BlitzCredoChecks.DocsBeforeSpecs` is enabled — `@doc` must precede `@spec` for every public function.
 
 ### Function documentation
@@ -102,7 +102,7 @@ def function(...), do: ...
 
 ## Project structure conventions
 
-- Public API lives in `lib/elixir_exec.ex` only. Other modules are internal unless their structs appear in return types (`OSProcess`, `Output`).
+- Public API lives in `lib/elixir_exec.ex` only. Other modules are internal unless their structs appear in return types (`Handle`, `Output`).
 - Internal modules go in `lib/elixir_exec/`. Sub-namespaces (e.g. the `Stream.Buffer` data type) go in `lib/elixir_exec/stream/`.
 - Test files mirror `lib/` exactly: `lib/elixir_exec/runner.ex` ↔ `test/elixir_exec/runner_test.exs`.
 - The top-level public-API test file is `test/elixir_exec_test.exs` and uses `doctest ElixirExec`.
