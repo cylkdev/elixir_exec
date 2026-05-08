@@ -76,14 +76,7 @@ defmodule ElixirExec.Stream.Buffer do
         }
 
   @enforce_keys [:mode, :queue]
-  defstruct mode: nil,
-            queue: nil,
-            delim: "\n",
-            partial: "",
-            done: false,
-            client: nil,
-            port_pid: nil,
-            monitor_ref: nil
+  defstruct [:mode, :queue, :delim, :partial, :done, :client, :port_pid, :monitor_ref]
 
   # ---------------------------------------------------------------------------
   # Construction
@@ -124,7 +117,16 @@ defmodule ElixirExec.Stream.Buffer do
               inspect(delim)
     end
 
-    %__MODULE__{mode: mode, queue: :queue.new(), delim: delim}
+    %__MODULE__{
+      mode: mode,
+      queue: :queue.new(),
+      delim: delim,
+      partial: "",
+      done: false,
+      client: nil,
+      port_pid: nil,
+      monitor_ref: nil
+    }
   end
 
   # ---------------------------------------------------------------------------
