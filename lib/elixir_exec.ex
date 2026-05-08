@@ -51,8 +51,7 @@ defmodule ElixirExec do
       operating-system process id (the same number you'd see in `ps`).
   """
 
-  alias ElixirExec.{Options, Output, Core}
-  alias ElixirExec.Handle, as: ExProcess
+  alias ElixirExec.{Core, Handle, Options, Output}
 
   # ---------------------------------------------------------------------------
   # Types
@@ -156,7 +155,7 @@ defmodule ElixirExec do
       ...>   ElixirExec.run("ls", bogus_key: 1)
   """
   @spec run(command(), command_options()) ::
-          {:ok, ExProcess.t()} | {:ok, Output.t()} | {:error, term()}
+          {:ok, Handle.t()} | {:ok, Output.t()} | {:error, term()}
   def run(command, options \\ []), do: Core.run(:run, command, options)
 
   @doc """
@@ -196,7 +195,7 @@ defmodule ElixirExec do
       end
   """
   @spec run_link(command(), command_options()) ::
-          {:ok, ExProcess.t()} | {:ok, Output.t()} | {:error, term()}
+          {:ok, Handle.t()} | {:ok, Output.t()} | {:error, term()}
   def run_link(command, options \\ []), do: Core.run(:run_link, command, options)
 
   @doc """
@@ -250,7 +249,7 @@ defmodule ElixirExec do
       ...>   ElixirExec.stream("echo hi", sync: true)
   """
   @spec stream(command(), command_options()) ::
-          {:ok, ExProcess.t()} | {:error, term()}
+          {:ok, Handle.t()} | {:error, term()}
   def stream(command, options \\ []) do
     options = Keyword.merge(options, monitor: true, stdout: :stream)
     run(command, options)
@@ -301,12 +300,12 @@ defmodule ElixirExec do
       is_pid(ctl)
   """
   @spec manage(os_pid() | port(), command_options()) ::
-          {:ok, ExProcess.t()} | {:error, term()}
+          {:ok, Handle.t()} | {:error, term()}
   def manage(target, options \\ []) do
     with {:ok, validated} <- Options.validate_command(options),
          {:ok, pid, os_pid} <-
            :exec.manage(target, Options.to_erl_command_options(validated)) do
-      {:ok, %ExProcess{controller: pid, os_pid: os_pid}}
+      {:ok, %Handle{controller: pid, os_pid: os_pid}}
     end
   end
 
@@ -344,7 +343,7 @@ defmodule ElixirExec do
       :ok = ElixirExec.stop(pid)
   """
   @spec stop(pid() | os_pid() | port()) :: :ok | {:error, term()}
-  defdelegate stop(target), to: :exec
+  def stop(target), do: :exec.stop(target)
 
   @doc """
   Stops a running command and waits up to `timeout` milliseconds for it
@@ -448,7 +447,7 @@ defmodule ElixirExec do
       :ok = ElixirExec.write_stdin(cat_pid, :eof)
   """
   @spec write_stdin(pid() | os_pid(), binary() | :eof) :: :ok
-  defdelegate write_stdin(target, data), to: :exec, as: :send
+  def write_stdin(target, data), do: :exec.send(target, data)
 
   @doc """
   Changes the process-group id of a running OS process.
@@ -485,7 +484,7 @@ defmodule ElixirExec do
       end
   """
   @spec set_gid(os_pid(), non_neg_integer()) :: :ok | {:error, term()}
-  defdelegate set_gid(os_pid, gid), to: :exec, as: :setpgid
+  def set_gid(os_pid, gid), do: :exec.setpgid(os_pid, gid)
 
   # ---------------------------------------------------------------------------
   # Identity round-trips
@@ -590,7 +589,7 @@ defmodule ElixirExec do
       ElixirExec.kill(sleep_os_pid, 9)
   """
   @spec which_children() :: [os_pid()]
-  defdelegate which_children(), to: :exec
+  def which_children(), do: :exec.which_children()
 
   @doc """
   Decodes a raw `wait`-style exit code into a structured tuple.
@@ -624,7 +623,7 @@ defmodule ElixirExec do
       {:signal, :sighup, false}
   """
   @spec status(exit_code()) :: {:status, exit_code()} | {:signal, atom() | integer(), boolean()}
-  defdelegate status(exit_code), to: :exec
+  def status(exit_code), do: :exec.status(exit_code)
 
   @doc """
   Looks up the atom name for an integer signal number.
@@ -651,7 +650,7 @@ defmodule ElixirExec do
       :sigkill
   """
   @spec signal(integer()) :: atom() | integer()
-  defdelegate signal(signal), to: :exec
+  def signal(signal), do: :exec.signal(signal)
 
   @doc """
   Looks up the integer signal number for an atom name, or passes an
@@ -711,7 +710,7 @@ defmodule ElixirExec do
       :ok = ElixirExec.winsz(pid, 24, 80)
   """
   @spec winsz(pid() | os_pid(), pos_integer(), pos_integer()) :: :ok | {:error, term()}
-  defdelegate winsz(target, rows, cols), to: :exec
+  def winsz(target, rows, cols), do: :exec.winsz(target, rows, cols)
 
   @doc """
   Updates the pty (pseudo-terminal) settings of a running pty-attached
@@ -740,7 +739,7 @@ defmodule ElixirExec do
       :ok = ElixirExec.pty_opts(pid, echo: false)
   """
   @spec pty_opts(pid() | os_pid(), keyword()) :: :ok | {:error, term()}
-  defdelegate pty_opts(target, opts), to: :exec
+  def pty_opts(target, opts), do: :exec.pty_opts(target, opts)
 
   # ---------------------------------------------------------------------------
   # Receive helpers
@@ -793,7 +792,7 @@ defmodule ElixirExec do
     receive do
       {:stdout, ^os_pid, data} -> {:stdout, data}
       {:stderr, ^os_pid, data} -> {:stderr, data}
-      {:DOWN, ^os_pid, :process, _pid, reason} -> {:exit, ExProcess.decode_reason(reason)}
+      {:DOWN, ^os_pid, :process, _pid, reason} -> {:exit, Handle.decode_reason(reason)}
     after
       timeout -> :timeout
     end
@@ -847,7 +846,7 @@ defmodule ElixirExec do
     receive do
       {:stdout, ^os_pid, _data} -> await_exit(os_pid, timeout)
       {:stderr, ^os_pid, _data} -> await_exit(os_pid, timeout)
-      {:DOWN, ^os_pid, :process, _pid, reason} -> {:ok, ExProcess.decode_reason(reason)}
+      {:DOWN, ^os_pid, :process, _pid, reason} -> {:ok, Handle.decode_reason(reason)}
     after
       timeout -> {:error, :timeout}
     end

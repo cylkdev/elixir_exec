@@ -1,4 +1,4 @@
-defmodule ElixirExec.Stream.Drain do
+defmodule ElixirExec.StreamServer.Drain do
   @moduledoc """
   Internal — wraps a stream `Enumerable` with a finalizer that consumes the
   `monitor: true` `:DOWN` message from the caller's mailbox after iteration

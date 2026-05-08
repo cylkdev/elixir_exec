@@ -6,9 +6,9 @@ defmodule ElixirExec.CoreTest do
   # credo:disable-for-next-line BlitzCredoChecks.NoAsyncFalse
   use ExUnit.Case, async: false
 
-  alias ElixirExec.Output
-  alias ElixirExec.Handle, as: ExProcess
   alias ElixirExec.Core
+  alias ElixirExec.Handle
+  alias ElixirExec.Output
   alias ElixirExec.StreamSupervisor
 
   # ---------------------------------------------------------------------------
@@ -48,7 +48,7 @@ defmodule ElixirExec.CoreTest do
 
   describe "run/3 async with :run" do
     test "returns %ElixirExec.Handle{} struct with controller, os_pid, and nil stream" do
-      assert {:ok, %ExProcess{} = process} =
+      assert {:ok, %Handle{} = process} =
                Core.run(:run, "echo hi", monitor: true, stdout: true)
 
       assert is_pid(process.controller)
@@ -58,7 +58,7 @@ defmodule ElixirExec.CoreTest do
     end
 
     test "delivers {:stdout, _, _} and DOWN messages to the test mailbox" do
-      assert {:ok, %ExProcess{controller: pid, os_pid: os_pid, stream: nil}} =
+      assert {:ok, %Handle{controller: pid, os_pid: os_pid, stream: nil}} =
                Core.run(:run, "echo hi", monitor: true, stdout: true)
 
       assert_receive {:stdout, ^os_pid, "hi\n"}, 1_000
@@ -74,7 +74,7 @@ defmodule ElixirExec.CoreTest do
     test "returns %ElixirExec.Handle{} when linking" do
       Process.flag(:trap_exit, true)
 
-      assert {:ok, %ExProcess{controller: pid, os_pid: os_pid, stream: nil}} =
+      assert {:ok, %Handle{controller: pid, os_pid: os_pid, stream: nil}} =
                Core.run(:run_link, "true", [])
 
       assert is_pid(pid)
@@ -107,7 +107,7 @@ defmodule ElixirExec.CoreTest do
 
   describe "run/3 stream" do
     test "returns %ElixirExec.Handle{} whose stream yields stdout lines" do
-      assert {:ok, %ExProcess{stream: enum} = process} =
+      assert {:ok, %Handle{stream: enum} = process} =
                Core.run(
                  :run,
                  "for i in 1 2 3; do echo Iter$i; done",
@@ -130,7 +130,7 @@ defmodule ElixirExec.CoreTest do
         |> Enum.map(fn {_, pid, _, _} -> pid end)
         |> MapSet.new()
 
-      assert {:ok, %ExProcess{stream: enum}} =
+      assert {:ok, %Handle{stream: enum}} =
                Core.run(
                  :run,
                  "for i in 1 2 3; do echo Iter$i; done",

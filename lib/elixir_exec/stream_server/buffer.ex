@@ -1,4 +1,4 @@
-defmodule ElixirExec.Stream.Buffer do
+defmodule ElixirExec.StreamServer.Buffer do
   @moduledoc """
   Internal — the data structure that holds buffered output for one
   stream.
@@ -7,7 +7,7 @@ defmodule ElixirExec.Stream.Buffer do
   process, sends a message, or watches anyone for exit. Its job is to
   remember what output has arrived but not yet been read, and to
   decide what the next element to emit should be. The
-  `ElixirExec.Stream` worker is the one that talks to the outside
+  `ElixirExec.StreamServer` worker is the one that talks to the outside
   world; it calls into this module to update the buffer.
 
   ## Modes
@@ -50,7 +50,7 @@ defmodule ElixirExec.Stream.Buffer do
 
   ## Example
 
-      iex> buffer = ElixirExec.Stream.Buffer.new(:chunks)
+      iex> buffer = ElixirExec.StreamServer.Buffer.new(:chunks)
       iex> buffer.mode
       :chunks
       iex> :queue.is_empty(buffer.queue)
@@ -87,7 +87,7 @@ defmodule ElixirExec.Stream.Buffer do
 
   ## Examples
 
-      iex> buffer = ElixirExec.Stream.Buffer.new(:chunks)
+      iex> buffer = ElixirExec.StreamServer.Buffer.new(:chunks)
       iex> buffer.mode
       :chunks
       iex> :queue.is_empty(buffer.queue)
@@ -113,7 +113,7 @@ defmodule ElixirExec.Stream.Buffer do
 
     unless is_binary(delim) and delim !== "" do
       raise ArgumentError,
-            "ElixirExec.Stream.Buffer: :delim must be a non-empty binary, got: " <>
+            "ElixirExec.StreamServer.Buffer: :delim must be a non-empty binary, got: " <>
               inspect(delim)
     end
 
@@ -213,7 +213,7 @@ defmodule ElixirExec.Stream.Buffer do
 
   ## Examples
 
-      iex> ElixirExec.Stream.Buffer.pop(ElixirExec.Stream.Buffer.new(:chunks))
+      iex> ElixirExec.StreamServer.Buffer.pop(ElixirExec.StreamServer.Buffer.new(:chunks))
       :empty
   """
   @spec pop(t()) :: {:ok, element(), t()} | :empty

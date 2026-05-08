@@ -1,7 +1,7 @@
 defmodule ElixirExec.StreamSupervisorTest do
   use ExUnit.Case
 
-  alias ElixirExec.Stream, as: ExStream
+  alias ElixirExec.StreamServer
   alias ElixirExec.StreamSupervisor
 
   # ---------------------------------------------------------------------------
@@ -28,14 +28,14 @@ defmodule ElixirExec.StreamSupervisorTest do
         end
       end)
 
-    :ok = ExStream.attach(server, port_pid)
+    :ok = StreamServer.attach(server, port_pid)
     port_pid
   end
 
   # Stop a stream server and wait for it to actually exit before continuing.
   defp stop_and_await(server) do
     ref = Process.monitor(server)
-    :ok = ExStream.stop(server)
+    :ok = StreamServer.stop(server)
 
     receive do
       {:DOWN, ^ref, :process, ^server, _reason} -> :ok

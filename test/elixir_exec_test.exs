@@ -234,7 +234,7 @@ defmodule ElixirExecTest do
       # server pid. Capture it via Stream.unfold's representation isn't public,
       # so we use which_children + GenServer introspection: stop the stream by
       # halting iteration (already done via Enum.take) and verify by waiting on
-      # process death of *some* registered ElixirExec.Stream — but the simplest
+      # process death of *some* registered ElixirExec.StreamServer — but the simplest
       # reliable check is to fully drain the stream and confirm no stream
       # process leaks. Drain remaining elements; the underlying server should
       # exit on end-of-stream.
@@ -277,10 +277,10 @@ defmodule ElixirExecTest do
 
   describe "Stream public API uses GenServer call/cast/stop (rewrite invariant)" do
     test "attach/2 and stop/1 are exported with the expected arities" do
-      Code.ensure_loaded!(ElixirExec.Stream)
-      assert function_exported?(ElixirExec.Stream, :attach, 2)
-      assert function_exported?(ElixirExec.Stream, :stop, 1)
-      refute function_exported?(ElixirExec.Stream, :monitor, 2)
+      Code.ensure_loaded!(ElixirExec.StreamServer)
+      assert function_exported?(ElixirExec.StreamServer, :attach, 2)
+      assert function_exported?(ElixirExec.StreamServer, :stop, 1)
+      refute function_exported?(ElixirExec.StreamServer, :monitor, 2)
     end
   end
 

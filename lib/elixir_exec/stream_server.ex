@@ -1,4 +1,4 @@
-defmodule ElixirExec.Stream do
+defmodule ElixirExec.StreamServer do
   @moduledoc """
   Internal — receives a program's output messages and serves them to
   whoever is iterating, one element at a time.
@@ -6,7 +6,7 @@ defmodule ElixirExec.Stream do
   When you ask `ElixirExec` to stream a program's output, the library
   starts one of these and tells the underlying Erlang library
   (`:erlexec`) to send the program's output here. This module saves
-  what arrives into a small buffer (see `ElixirExec.Stream.Buffer`) and
+  what arrives into a small buffer (see `ElixirExec.StreamServer.Buffer`) and
   hands the elements out as the consumer asks for them. If the
   consumer asks while the buffer is empty, the call waits until either
   more output arrives or the program exits.
@@ -48,7 +48,7 @@ defmodule ElixirExec.Stream do
 
   use GenServer
 
-  alias ElixirExec.Stream.Buffer
+  alias ElixirExec.StreamServer.Buffer
 
   @typedoc "Stream mode. Determines which messages are buffered and the shape of emitted elements."
   @type mode :: :lines | :chunks | :stderr | :merged

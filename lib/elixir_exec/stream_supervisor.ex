@@ -5,7 +5,7 @@ defmodule ElixirExec.StreamSupervisor do
 
   You don't need to use this module directly. When you call
   `ElixirExec.stream/2`, the library asks this supervisor to start a
-  fresh worker (`ElixirExec.Stream`) for the run, and returns you
+  fresh worker (`ElixirExec.StreamServer`) for the run, and returns you
   something built from `Stream.unfold/2` that you can pass to `Enum`
   or `Stream` functions. Each worker buffers one program's output as
   it arrives.
@@ -15,7 +15,7 @@ defmodule ElixirExec.StreamSupervisor do
   It returns `{:ok, server, enum}`:
 
     * `server` is the worker's process id. You hand this to
-      `ElixirExec.Stream.attach/2` so the worker can watch the
+      `ElixirExec.StreamServer.attach/2` so the worker can watch the
       controller pid for exit.
     * `enum` pulls one element at a time out of the worker. When the
       worker has nothing left to give — including when it has already
@@ -29,7 +29,7 @@ defmodule ElixirExec.StreamSupervisor do
 
   use DynamicSupervisor
 
-  alias ElixirExec.Stream, as: StreamServer
+  alias ElixirExec.StreamServer
 
   @typedoc "Result of `start_stream/1`."
   @type start_stream_result :: {:ok, pid(), Enumerable.t()} | {:error, term()}
@@ -57,16 +57,16 @@ defmodule ElixirExec.StreamSupervisor do
   # ---------------------------------------------------------------------------
 
   @doc """
-  Starts a new `ElixirExec.Stream` worker in `mode` under this supervisor.
+  Starts a new `ElixirExec.StreamServer` worker in `mode` under this supervisor.
 
-  `opts` is a keyword list forwarded to `ElixirExec.Stream.Buffer.new/2`.
+  `opts` is a keyword list forwarded to `ElixirExec.StreamServer.Buffer.new/2`.
   In `:lines` mode the only meaningful option today is `:delim` (a
   non-empty binary, default `"\\n"`), which controls how stdout chunks
   are split into lines.
 
   Returns `{:ok, pid, enum}` on success, where `enum` is the `Enumerable.t()`
   the caller should iterate to drain the worker's output. The third element
-  produced by `ElixirExec.Stream.start_link/1` (when present) is discarded:
+  produced by `ElixirExec.StreamServer.start_link/1` (when present) is discarded:
   the supervisor builds its own unfold over the worker pid so the contract
   is identical regardless of how the worker chooses to surface the enum.
 
@@ -106,7 +106,7 @@ defmodule ElixirExec.StreamSupervisor do
   # Pull the next element. Returns `nil` to terminate the unfold when the
   # worker reports end-of-stream OR when the worker has already exited
   # (`:noproc`, `:normal`, `:shutdown`) — those are all valid terminal states
-  # for an `ElixirExec.Stream` GenServer and should produce a clean end of the
+  # for an `ElixirExec.StreamServer` GenServer and should produce a clean end of the
   # enumeration rather than a crash.
   @spec next_element(pid()) :: {term(), pid()} | nil
   defp next_element(server) do

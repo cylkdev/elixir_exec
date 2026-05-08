@@ -1,7 +1,7 @@
-defmodule ElixirExec.Stream.DrainTest do
+defmodule ElixirExec.StreamServer.DrainTest do
   use ExUnit.Case, async: true
 
-  alias ElixirExec.Stream.Drain
+  alias ElixirExec.StreamServer.Drain
 
   # The drain finalizer reads from the *enumerating* process's mailbox.
   # Each test spawns a Task so the test process's own mailbox stays clean

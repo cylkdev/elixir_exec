@@ -1,9 +1,9 @@
-defmodule ElixirExec.Stream.BufferTest do
+defmodule ElixirExec.StreamServer.BufferTest do
   use ExUnit.Case, async: true
 
-  alias ElixirExec.Stream.Buffer
+  alias ElixirExec.StreamServer.Buffer
 
-  doctest ElixirExec.Stream.Buffer
+  doctest ElixirExec.StreamServer.Buffer
 
   # ---------------------------------------------------------------------------
   # Helpers

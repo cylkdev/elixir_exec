@@ -1,7 +1,7 @@
-defmodule ElixirExec.StreamTest do
+defmodule ElixirExec.StreamServerTest do
   use ExUnit.Case, async: true
 
-  alias ElixirExec.Stream, as: ExStream
+  alias ElixirExec.StreamServer
 
   # The stream server is started with `start_link/1`, so the test pid is
   # linked to it. When the server shuts down with `:shutdown` (the normal
@@ -29,7 +29,7 @@ defmodule ElixirExec.StreamTest do
   # Synchronously stop the server and wait for it to actually exit.
   defp stop_and_await(server) do
     ref = Process.monitor(server)
-    :ok = ExStream.stop(server)
+    :ok = StreamServer.stop(server)
 
     receive do
       {:DOWN, ^ref, :process, ^server, _reason} -> :ok
@@ -61,7 +61,7 @@ defmodule ElixirExec.StreamTest do
         end
       end)
 
-    :ok = ExStream.attach(server, port_pid)
+    :ok = StreamServer.attach(server, port_pid)
     port_pid
   end
 
@@ -71,7 +71,7 @@ defmodule ElixirExec.StreamTest do
 
   describe ":chunks mode" do
     test "emits stdout chunks exactly as received" do
-      {:ok, server, stream} = ExStream.start_link(:chunks)
+      {:ok, server, stream} = StreamServer.start_link(:chunks)
       port_pid = spawn_dummy_port(server)
 
       send_stdout(server, "alpha")
@@ -84,7 +84,7 @@ defmodule ElixirExec.StreamTest do
     end
 
     test "ignores stderr in :chunks mode" do
-      {:ok, server, stream} = ExStream.start_link(:chunks)
+      {:ok, server, stream} = StreamServer.start_link(:chunks)
       port_pid = spawn_dummy_port(server)
 
       send_stderr(server, "noise")
@@ -101,7 +101,7 @@ defmodule ElixirExec.StreamTest do
 
   describe ":lines mode with custom delim" do
     test "lines mode with custom delim splits and re-appends" do
-      {:ok, server, stream} = ExStream.start_link(:lines, delim: "|")
+      {:ok, server, stream} = StreamServer.start_link(:lines, delim: "|")
       port_pid = spawn_dummy_port(server)
 
       send_stdout(server, "a|b|c")
@@ -111,7 +111,7 @@ defmodule ElixirExec.StreamTest do
     end
 
     test "start_link/1 still works with default delim" do
-      {:ok, server, stream} = ExStream.start_link(:lines)
+      {:ok, server, stream} = StreamServer.start_link(:lines)
       port_pid = spawn_dummy_port(server)
 
       send_stdout(server, "a\nb\n")
@@ -121,7 +121,7 @@ defmodule ElixirExec.StreamTest do
     end
 
     test "child_spec tuple form ({mode, opts}) routes through start_link/1" do
-      {:ok, pid, stream} = ExStream.start_link({:lines, [delim: "|"]})
+      {:ok, pid, stream} = StreamServer.start_link({:lines, [delim: "|"]})
       assert is_pid(pid)
       port_pid = spawn_dummy_port(pid)
 
@@ -134,7 +134,7 @@ defmodule ElixirExec.StreamTest do
 
   describe ":lines mode" do
     test "reassembles chunks split across newline boundaries" do
-      {:ok, server, stream} = ExStream.start_link(:lines)
+      {:ok, server, stream} = StreamServer.start_link(:lines)
       port_pid = spawn_dummy_port(server)
 
       send_stdout(server, "hello\nworld")
@@ -145,7 +145,7 @@ defmodule ElixirExec.StreamTest do
     end
 
     test "emits trailing partial line only on end-of-stream" do
-      {:ok, server, stream} = ExStream.start_link(:lines)
+      {:ok, server, stream} = StreamServer.start_link(:lines)
       port_pid = spawn_dummy_port(server)
 
       send_stdout(server, "abc")
@@ -155,7 +155,7 @@ defmodule ElixirExec.StreamTest do
     end
 
     test "single chunk with multiple newlines yields one element per line" do
-      {:ok, server, stream} = ExStream.start_link(:lines)
+      {:ok, server, stream} = StreamServer.start_link(:lines)
       port_pid = spawn_dummy_port(server)
 
       send_stdout(server, "a\nb\nc\n")
@@ -165,7 +165,7 @@ defmodule ElixirExec.StreamTest do
     end
 
     test "empty output yields empty list" do
-      {:ok, server, stream} = ExStream.start_link(:lines)
+      {:ok, server, stream} = StreamServer.start_link(:lines)
       port_pid = spawn_dummy_port(server)
       send(port_pid, :exit)
 
@@ -179,7 +179,7 @@ defmodule ElixirExec.StreamTest do
 
   describe ":stderr mode" do
     test "emits only stderr chunks" do
-      {:ok, server, stream} = ExStream.start_link(:stderr)
+      {:ok, server, stream} = StreamServer.start_link(:stderr)
       port_pid = spawn_dummy_port(server)
 
       send_stdout(server, "stdout-noise")
@@ -198,7 +198,7 @@ defmodule ElixirExec.StreamTest do
 
   describe ":merged mode" do
     test "yields tagged tuples in arrival order" do
-      {:ok, server, stream} = ExStream.start_link(:merged)
+      {:ok, server, stream} = StreamServer.start_link(:merged)
       port_pid = spawn_dummy_port(server)
 
       send_stdout(server, "out-1")
@@ -222,7 +222,7 @@ defmodule ElixirExec.StreamTest do
 
   describe "attach/2 end-of-stream" do
     test "down from attached port pid signals end after buffer drains" do
-      {:ok, server, stream} = ExStream.start_link(:chunks)
+      {:ok, server, stream} = StreamServer.start_link(:chunks)
       port_pid = spawn_dummy_port(server)
 
       send_stdout(server, "x")
@@ -233,7 +233,7 @@ defmodule ElixirExec.StreamTest do
     end
 
     test "parked consumer is released when port pid exits with empty buffer" do
-      {:ok, server, stream} = ExStream.start_link(:chunks)
+      {:ok, server, stream} = StreamServer.start_link(:chunks)
       port_pid = spawn_dummy_port(server)
 
       task =
@@ -249,7 +249,7 @@ defmodule ElixirExec.StreamTest do
     end
 
     test "parked consumer receives data that arrives later" do
-      {:ok, server, stream} = ExStream.start_link(:chunks)
+      {:ok, server, stream} = StreamServer.start_link(:chunks)
       port_pid = spawn_dummy_port(server)
 
       task =
@@ -267,7 +267,7 @@ defmodule ElixirExec.StreamTest do
     end
 
     test "down from an unrelated pid does not end the stream" do
-      {:ok, server, stream} = ExStream.start_link(:chunks)
+      {:ok, server, stream} = StreamServer.start_link(:chunks)
       port_pid = spawn_dummy_port(server)
 
       # Synthesize a DOWN for a pid that is NOT the attached port_pid.
@@ -287,7 +287,7 @@ defmodule ElixirExec.StreamTest do
 
   describe "attach/2 race-freedom" do
     test "monitor is installed before attach/2 returns; immediate kill ends stream" do
-      {:ok, server, stream} = ExStream.start_link(:chunks)
+      {:ok, server, stream} = StreamServer.start_link(:chunks)
 
       port_pid =
         spawn(fn ->
@@ -297,7 +297,7 @@ defmodule ElixirExec.StreamTest do
         end)
 
       # Synchronous: when this returns, Process.monitor/1 is in place.
-      :ok = ExStream.attach(server, port_pid)
+      :ok = StreamServer.attach(server, port_pid)
 
       # Kill the port pid IMMEDIATELY after attach returns. With the old
       # `send/2`-based monitor wiring there was a window where this could
@@ -315,7 +315,7 @@ defmodule ElixirExec.StreamTest do
 
   describe "lifecycle" do
     test "enum take leaves the server alive when more data is buffered" do
-      {:ok, server, stream} = ExStream.start_link(:chunks)
+      {:ok, server, stream} = StreamServer.start_link(:chunks)
       _port_pid = spawn_dummy_port(server)
 
       send_stdout(server, "a")
@@ -330,7 +330,7 @@ defmodule ElixirExec.StreamTest do
     end
 
     test "stop/1 closes the stream cleanly" do
-      {:ok, server, stream} = ExStream.start_link(:chunks)
+      {:ok, server, stream} = StreamServer.start_link(:chunks)
       _port_pid = spawn_dummy_port(server)
 
       send_stdout(server, "only")
@@ -356,7 +356,7 @@ defmodule ElixirExec.StreamTest do
 
   describe "consumer-side :noproc" do
     test "calling the stream after the server has stopped yields []" do
-      {:ok, server, stream} = ExStream.start_link(:chunks)
+      {:ok, server, stream} = StreamServer.start_link(:chunks)
       _port_pid = spawn_dummy_port(server)
 
       stop_and_await(server)

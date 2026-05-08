@@ -19,7 +19,7 @@ defmodule ElixirExec.Core do
        `%ElixirExec.Output{}` for a synchronous one.
 
   If the caller asked for `stdout: :stream`, this module also starts a
-  small worker (`ElixirExec.Stream`) under
+  small worker (`ElixirExec.StreamServer`) under
   `ElixirExec.StreamSupervisor`. The worker receives the program's
   output as it arrives and exposes it as something you can iterate. If
   `:erlexec` then refuses the command, the worker is shut down so it
@@ -36,8 +36,7 @@ defmodule ElixirExec.Core do
       refused the command.
   """
 
-  alias ElixirExec.{Options, Output, Stream, StreamSupervisor}
-  alias ElixirExec.Handle, as: ExProcess
+  alias ElixirExec.{Handle, Options, Output, StreamServer, StreamSupervisor}
 
   @typedoc "Which `:exec` start function to call."
   @type kind :: :run | :run_link
@@ -46,7 +45,7 @@ defmodule ElixirExec.Core do
   @type command :: String.t() | [String.t()]
 
   @typedoc "Return shape from `run/3`."
-  @type result :: {:ok, ExProcess.t()} | {:ok, Output.t()} | {:error, term()}
+  @type result :: {:ok, Handle.t()} | {:ok, Output.t()} | {:error, term()}
 
   # Internal: the optional handle returned by `maybe_swap_stream/1`.
   # Either `nil` (no streaming requested) or `{server_pid, enum}` for a
@@ -117,28 +116,28 @@ defmodule ElixirExec.Core do
   # Async + stream wired in: attach the worker to the port pid (synchronous
   # call so the monitor is installed before we return), then surface the
   # struct with the live enum. When `:drain` is true (the schema default),
-  # wrap the enum with `ElixirExec.Stream.Drain.attach/2` so iteration's
+  # wrap the enum with `ElixirExec.StreamServer.Drain.attach/2` so iteration's
   # finalizer drains the caller-side `:DOWN` left in the mailbox by the
   # forced `monitor: true`.
   @spec finalize(term(), stream_handle(), keyword()) :: result()
   defp finalize({:ok, pid, os_pid}, {server, enum}, validated)
        when is_pid(pid) and is_integer(os_pid) do
-    :ok = Stream.attach(server, pid)
+    :ok = StreamServer.attach(server, pid)
 
     enum =
       if Keyword.fetch!(validated, :drain) do
-        ElixirExec.Stream.Drain.attach(enum, os_pid)
+        StreamServer.Drain.attach(enum, os_pid)
       else
         enum
       end
 
-    {:ok, %ExProcess{controller: pid, os_pid: os_pid, stream: enum}}
+    {:ok, %Handle{controller: pid, os_pid: os_pid, stream: enum}}
   end
 
   # Async, no stream: just wrap the controller pid and OS pid into a struct.
   defp finalize({:ok, pid, os_pid}, nil, _validated)
        when is_pid(pid) and is_integer(os_pid) do
-    {:ok, %ExProcess{controller: pid, os_pid: os_pid}}
+    {:ok, %Handle{controller: pid, os_pid: os_pid}}
   end
 
   # Sync (`sync: true` was set; `:exec` returns the captured proplist).
@@ -154,7 +153,7 @@ defmodule ElixirExec.Core do
   # Error from `:exec` after a stream worker was started: tear the worker
   # down so it doesn't leak, then surface the error.
   defp finalize({:error, _} = err, {server, _enum}, _validated) do
-    :ok = Stream.stop(server)
+    :ok = StreamServer.stop(server)
     err
   end
 end
