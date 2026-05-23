@@ -5,7 +5,7 @@
 `elixir_exec` is a wrapper, not an engine. The engine is `:erlexec`, which runs as a single Erlang process plus a port driver to a small C program (`exec-port`) that does the actual `fork/exec`, signal delivery, and IO multiplexing. This library adds three things on top:
 
 1. **Option validation and translation** (`ElixirExec.Options`).
-2. **Result wrapping** (`ElixirExec.Handle`, `ElixirExec.Output`).
+2. **Result wrapping** (`ElixirExec.Stream`, `ElixirExec.Output`).
 3. **A streaming abstraction** for line-by-line stdout consumption (`ElixirExec.Stream` + `ElixirExec.StreamSupervisor` + `ElixirExec.Stream.Buffer`).
 
 Everything else (process lifetime, signals, stdin) is delegated through to `:erlexec` directly.
@@ -97,7 +97,7 @@ sequenceDiagram
     O-->>R: {:ok, validated}
 
     alt opts has stdout: :stream
-        R->>SS: start_stream(mode)
+        R->>SS: start_dispatcher(mode)
         SS->>W: start_link(mode)
         W-->>SS: {:ok, worker_pid}
         SS-->>R: {worker_pid, enum}
@@ -119,9 +119,9 @@ sequenceDiagram
         alt streaming
             R->>W: attach(controller_pid)
             W-->>R: :ok
-            R-->>C: {:ok, %Handle{controller, os_pid, stream}}
+            R-->>C: {:ok, %Stream{controller, os_pid, stream}}
         else not streaming
-            R-->>C: {:ok, %Handle{controller, os_pid, stream: nil}}
+            R-->>C: {:ok, %Stream{controller, os_pid, stream: nil}}
         end
     end
 ```
@@ -183,7 +183,7 @@ The buffer is a plain `:queue` plus a small amount of mode-specific state (a par
 
 ### Race-free attach
 
-The flow has one subtle correctness requirement: the worker must install its `Process.monitor/1` on the `:erlexec` controller pid **before** the controller could possibly exit. `ElixirExec.Stream.attach/2` is a synchronous `GenServer.call` that installs the monitor and returns. `ElixirExec.Core.run/3` calls `attach/2` immediately after `:exec.run/2` returns and before handing the `%Handle{stream: enum}` back to the caller. This closes the race where a very short-lived program could exit before the monitor is set up.
+The flow has one subtle correctness requirement: the worker must install its `Process.monitor/1` on the `:erlexec` controller pid **before** the controller could possibly exit. `ElixirExec.Stream.attach/2` is a synchronous `GenServer.call` that installs the monitor and returns. `ElixirExec.Core.run/3` calls `attach/2` immediately after `:exec.run/2` returns and before handing the `%Stream{stream: enum}` back to the caller. This closes the race where a very short-lived program could exit before the monitor is set up.
 
 ## Error and exit handling
 
@@ -200,7 +200,7 @@ The flow has one subtle correctness requirement: the worker must install its `Pr
 ## Concurrency model
 
 - **One stream worker per streaming run.** Workers are independent; nothing crosses between them.
-- **No registry, no ETS.** Workers are reachable only via the pid returned in `%Handle{}`; the `Enumerable` closes over that pid.
+- **No registry, no ETS.** Workers are reachable only via the pid returned in `%Stream{}`; the `Enumerable` closes over that pid.
 - **Single parked consumer per worker.** The `Buffer` parks at most one `from` reference. Multiple concurrent iterators on the same stream are not a supported pattern.
 - **`:exec`'s own registry** is what `os_pid/1`, `pid/1`, and `which_children/0` reach into. This library does not maintain a parallel index.
 

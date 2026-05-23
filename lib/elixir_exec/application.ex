@@ -5,10 +5,10 @@ defmodule ElixirExec.Application do
 
   @impl Application
   def start(_type, _args) do
-    children = [
-      {ElixirExec.StreamSupervisor, []}
-    ]
+    Supervisor.start_link(children(), strategy: :one_for_one, name: ElixirExec.Supervisor)
+  end
 
-    Supervisor.start_link(children, strategy: :one_for_one, name: ElixirExec.Supervisor)
+  def children do
+    [ElixirExec.StreamSupervisor]
   end
 end

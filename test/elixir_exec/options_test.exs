@@ -480,6 +480,7 @@ defmodule ElixirExec.OptionsTest do
       for {key, value} <- opts do
         assert Keyword.get(validated, key) === value
       end
+
       # Schema-supplied defaults are layered on.
       assert Keyword.fetch!(validated, :delim) === "\n"
       assert Keyword.fetch!(validated, :drain) === true

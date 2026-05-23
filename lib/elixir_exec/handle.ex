@@ -1,44 +1,45 @@
 defmodule ElixirExec.Handle do
   @moduledoc """
-  A handle to a running external program.
+  Handle for a background-running external program.
 
-  You get one of these back when you start a command in the background
-  with `ElixirExec.run/2`, `ElixirExec.run_link/2`,
-  `ElixirExec.stream/2`, or `ElixirExec.manage/2`. Hold onto it: that's
-  how you talk to the program afterwards.
+  Every call that starts a program in the background —
+  `ElixirExec.run/2`, `ElixirExec.run_link/2`, `ElixirExec.stream/2`,
+  and `ElixirExec.manage/2` — returns `{:ok, %ElixirExec.Handle{}}`.
+  The struct is how the caller addresses the program afterwards:
+  pattern-match it, then hand `:controller` or `:os_pid` to any of the
+  control or query functions in `ElixirExec` (`stop/1`,
+  `stop_and_wait/2`, `kill/2`, `write_stdin/2`, `os_pid/1`, `pid/1`,
+  `await_exit/2`, `receive_output/2`, and so on).
+
+  The same struct also carries an optional live `Enumerable` over the
+  program's stdout. That field is populated only when the command was
+  started with `ElixirExec.stream/2` or `stdout: :stream`; for a plain
+  background run it is `nil` and the struct acts purely as a handle.
 
   ## Fields
 
-    * `:controller` — the Elixir process that owns the running program
-      for you. Pass it (or `:os_pid`) to functions like
-      `ElixirExec.kill/2` or `ElixirExec.write_stdin/2` when you want to
-      do something to the program.
-    * `:os_pid` — the operating-system process id of the running
-      program. The same number you'd see in `ps` or in Activity Monitor.
-    * `:stream` — `nil` for a normal background run. When you started
-      the command with `ElixirExec.stream/2` (or with `stdout: :stream`),
-      this holds something you can iterate over with `Enum` or `Stream`
-      to read the program's output as it arrives.
+    * `:controller` — the Elixir pid that owns the running program.
+      Accepted as the target of every `ElixirExec` control function.
+    * `:os_pid` — the operating-system process id. The same number
+      you'd see in `ps` or Activity Monitor. Also accepted as the
+      target of every `ElixirExec` control function.
+    * `:stream` — `nil` for a plain background run. When the command
+      was started with `ElixirExec.stream/2` (or `stdout: :stream`),
+      this is an `Enumerable` over the program's stdout, one chunk
+      per element (lines, when the default `:delim` is in effect).
+      Iteration ends cleanly when the program exits and the buffer
+      drains.
 
-  ## Decoding exit reasons
+  ## Exit-reason decoding
 
-  `decode_reason/1` turns the raw exit reason that `:erlexec` reports
-  into a plain integer where it can. A clean exit (`:normal`) becomes
-  `0`. A specific exit code (`{:exit_status, n}`) becomes `n`. Anything
-  else — like `:killed` — is returned unchanged so you can decide what
-  to do with it.
-
-      iex> ElixirExec.Handle.decode_reason(:normal)
-      0
-
-      iex> ElixirExec.Handle.decode_reason({:exit_status, 9})
-      9
-
-      iex> ElixirExec.Handle.decode_reason({:exit_status, 0})
-      0
-
-      iex> ElixirExec.Handle.decode_reason(:killed)
-      :killed
+  This module also exposes `decode_reason/1`, which normalizes a raw
+  OS exit reason into the integer code most callers want: `:normal`
+  becomes `0`, `{:exit_status, n}` becomes `n`, and any other term
+  (signal atoms, unfamiliar tuples) is passed through unchanged.
+  `ElixirExec.receive_output/2` and `ElixirExec.await_exit/2` use it
+  to translate `:DOWN` reasons before handing them back to the
+  caller; you can call it directly when you receive a `:DOWN`
+  yourself.
   """
 
   @enforce_keys [:controller, :os_pid]
@@ -51,25 +52,19 @@ defmodule ElixirExec.Handle do
         }
 
   @doc """
-  Decodes the exit reason that `:erlexec` reports into a plain integer
-  when it can.
+  Decodes a raw exit reason into a plain integer where it can.
 
-  ## Parameters
+  Pass the reason you got back — usually from a `:DOWN` message or
+  from `ElixirExec.stop_and_wait/2`.
 
-    - `reason` - `term()`. The exit reason as it arrives from
-      `:erlexec`, typically inside a `:DOWN` message or as a
-      `stop_and_wait/2` return.
+  Returns `0` for the atom `:normal` (a clean exit).
 
-  ## Returns
+  Returns the integer `n` for `{:exit_status, n}`, including when `n`
+  is `0`.
 
-  `0` when `reason` is the atom `:normal` (a clean exit).
-
-  The integer `n` when `reason` is `{:exit_status, n}` — including
-  when `n` is `0`.
-
-  The original term, unchanged, for anything else: signal atoms (e.g.
-  `:killed`), unrecognised tuples, or custom reasons. The caller
-  decides how to interpret these.
+  Returns the original term, unchanged, for anything else — signal
+  atoms like `:killed`, unfamiliar tuples, or custom reasons. The
+  caller decides how to interpret these.
 
   ## Examples
 

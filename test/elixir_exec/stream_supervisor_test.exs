@@ -45,12 +45,12 @@ defmodule ElixirExec.StreamSupervisorTest do
   end
 
   # ---------------------------------------------------------------------------
-  # start_stream/1 contract
+  # start_dispatcher/1 contract
   # ---------------------------------------------------------------------------
 
-  describe "start_stream/1" do
+  describe "start_dispatcher/1" do
     test "returns {:ok, pid, enum} with a live pid and an Enumerable" do
-      assert {:ok, pid, enum} = StreamSupervisor.start_stream(:chunks)
+      assert {:ok, pid, enum} = StreamSupervisor.start_dispatcher(:chunks)
       assert is_pid(pid)
       assert Process.alive?(pid)
       # Stream.unfold/2 returns a %Stream{}; any Enumerable is acceptable.
@@ -63,9 +63,10 @@ defmodule ElixirExec.StreamSupervisorTest do
     end
 
     test "started pid is a child of ElixirExec.StreamSupervisor" do
-      assert {:ok, pid, _enum} = StreamSupervisor.start_stream(:chunks)
+      assert {:ok, pid, _enum} = StreamSupervisor.start_dispatcher(:chunks)
 
       children = DynamicSupervisor.which_children(StreamSupervisor)
+
       assert Enum.any?(children, fn
                {:undefined, ^pid, :worker, _modules} -> true
                _ -> false
@@ -76,7 +77,7 @@ defmodule ElixirExec.StreamSupervisorTest do
 
     for mode <- [:lines, :chunks, :stderr, :merged] do
       test "accepts mode #{inspect(mode)}" do
-        assert {:ok, pid, enum} = StreamSupervisor.start_stream(unquote(mode))
+        assert {:ok, pid, enum} = StreamSupervisor.start_dispatcher(unquote(mode))
         assert is_pid(pid)
         assert Process.alive?(pid)
         # Sanity: enum is consumable. Wire a dummy port and immediately end.
@@ -87,9 +88,9 @@ defmodule ElixirExec.StreamSupervisorTest do
     end
   end
 
-  describe "start_stream/2 with options" do
+  describe "start_dispatcher/2 with options" do
     test "passes :delim through to the worker (lines mode, custom delim)" do
-      assert {:ok, pid, enum} = StreamSupervisor.start_stream(:lines, delim: "|")
+      assert {:ok, pid, enum} = StreamSupervisor.start_dispatcher(:lines, delim: "|")
       port_pid = attach_dummy_port(pid)
 
       send(pid, {:stdout, 1, "a|b|c"})
@@ -98,8 +99,8 @@ defmodule ElixirExec.StreamSupervisorTest do
       assert Enum.to_list(enum) === ["a|", "b|", "c"]
     end
 
-    test "start_stream/1 still works (defaults the opts to [])" do
-      assert {:ok, pid, _enum} = StreamSupervisor.start_stream(:lines)
+    test "start_dispatcher/1 still works (defaults the opts to [])" do
+      assert {:ok, pid, _enum} = StreamSupervisor.start_dispatcher(:lines)
       stop_and_await(pid)
     end
   end
@@ -114,7 +115,7 @@ defmodule ElixirExec.StreamSupervisorTest do
       assert is_pid(sup_pid)
       sup_ref = Process.monitor(sup_pid)
 
-      assert {:ok, pid, _enum} = StreamSupervisor.start_stream(:chunks)
+      assert {:ok, pid, _enum} = StreamSupervisor.start_dispatcher(:chunks)
       child_ref = Process.monitor(pid)
 
       Process.exit(pid, :kill)
@@ -141,7 +142,7 @@ defmodule ElixirExec.StreamSupervisorTest do
 
   describe "clean termination" do
     test "after a child stops cleanly it is removed from the supervisor" do
-      assert {:ok, pid, _enum} = StreamSupervisor.start_stream(:chunks)
+      assert {:ok, pid, _enum} = StreamSupervisor.start_dispatcher(:chunks)
 
       assert pid in child_pids()
 

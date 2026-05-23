@@ -1,6 +1,6 @@
 # Testing Guide
 
-`elixir_exec` is tested with ExUnit. The suite is intentionally an integration test suite for the public API — most cases spawn real OS processes (`echo`, `sleep`, `cat`, `bash -c "..."`) rather than mocking `:erlexec`. Pure modules (`Options`, `Output`, `Handle`, `Stream.Buffer`) are tested with fast `async: true` unit tests.
+`elixir_exec` is tested with ExUnit. The suite is intentionally an integration test suite for the public API — most cases spawn real OS processes (`echo`, `sleep`, `cat`, `bash -c "..."`) rather than mocking `:erlexec`. Pure modules (`Options`, `Output`, `Stream`, `Stream.Buffer`) are tested with fast `async: true` unit tests.
 
 ## Layout
 
@@ -10,7 +10,7 @@
 | `test/elixir_exec/runner_test.exs` | `ElixirExec.Core` | `async: false`; exercises validation, dispatch, and stream-worker lifecycle end-to-end. |
 | `test/elixir_exec/options_test.exs` | `ElixirExec.Options` | `async: true`; pure schema and translation. |
 | `test/elixir_exec/output_test.exs` | `ElixirExec.Output` | `async: true`; uses `doctest`. |
-| `test/elixir_exec/process_test.exs` | `ElixirExec.Handle` | `async: true`. |
+| `test/elixir_exec/process_test.exs` | `ElixirExec.Stream` | `async: true`. |
 | `test/elixir_exec/stream_test.exs` | `ElixirExec.Stream` | GenServer-level; uses dummy port pids to drive the worker. |
 | `test/elixir_exec/stream/buffer_test.exs` | `ElixirExec.Stream.Buffer` | `async: true`; uses `doctest`. |
 | `test/elixir_exec/stream_supervisor_test.exs` | `ElixirExec.StreamSupervisor` | DynamicSupervisor child management. |
@@ -58,7 +58,7 @@ defmodule ElixirExecTest do
 
   describe "kill/2" do
     test "kill via os_pid sends DOWN with exit_status 9" do
-      {:ok, %ElixirExec.Handle{controller: pid, os_pid: os_pid}} =
+      {:ok, %ElixirExec.Stream{controller: pid, os_pid: os_pid}} =
         ElixirExec.run("sleep 10", monitor: true)
 
       assert :ok === ElixirExec.kill(os_pid, 9)

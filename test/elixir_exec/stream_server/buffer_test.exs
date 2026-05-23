@@ -1,15 +1,9 @@
 defmodule ElixirExec.StreamServer.BufferTest do
   use ExUnit.Case, async: true
 
-  alias ElixirExec.StreamServer.Buffer
-
   doctest ElixirExec.StreamServer.Buffer
 
-  # ---------------------------------------------------------------------------
-  # Helpers
-  # ---------------------------------------------------------------------------
-
-  defp queue_to_list(%Buffer{queue: q}), do: :queue.to_list(q)
+  alias ElixirExec.StreamServer.Buffer
 
   # ---------------------------------------------------------------------------
   # new/1
@@ -21,7 +15,7 @@ defmodule ElixirExec.StreamServer.BufferTest do
         buffer = Buffer.new(unquote(mode))
 
         assert %Buffer{mode: unquote(mode)} = buffer
-        assert queue_to_list(buffer) === []
+        assert Buffer.to_list(buffer) === []
         assert buffer.partial === ""
         assert buffer.done === false
         assert buffer.client === nil
@@ -62,7 +56,7 @@ defmodule ElixirExec.StreamServer.BufferTest do
         |> Buffer.new()
         |> Buffer.attach(port_pid, ref)
 
-      assert queue_to_list(buffer) === []
+      assert Buffer.to_list(buffer) === []
     end
   end
 
@@ -79,7 +73,7 @@ defmodule ElixirExec.StreamServer.BufferTest do
         |> Buffer.ingest_stdout("beta")
         |> Buffer.ingest_stdout("gamma")
 
-      assert queue_to_list(buffer) === ["alpha", "beta", "gamma"]
+      assert Buffer.to_list(buffer) === ["alpha", "beta", "gamma"]
     end
   end
 
@@ -90,7 +84,7 @@ defmodule ElixirExec.StreamServer.BufferTest do
         |> Buffer.new()
         |> Buffer.ingest_stderr("error")
 
-      assert queue_to_list(buffer) === []
+      assert Buffer.to_list(buffer) === []
     end
   end
 
@@ -106,7 +100,7 @@ defmodule ElixirExec.StreamServer.BufferTest do
         |> Buffer.ingest_stderr("e1")
         |> Buffer.ingest_stderr("e2")
 
-      assert queue_to_list(buffer) === ["e1", "e2"]
+      assert Buffer.to_list(buffer) === ["e1", "e2"]
     end
   end
 
@@ -117,7 +111,7 @@ defmodule ElixirExec.StreamServer.BufferTest do
         |> Buffer.new()
         |> Buffer.ingest_stdout("alpha")
 
-      assert queue_to_list(buffer) === []
+      assert Buffer.to_list(buffer) === []
     end
   end
 
@@ -132,7 +126,7 @@ defmodule ElixirExec.StreamServer.BufferTest do
         |> Buffer.new()
         |> Buffer.ingest_stdout("a")
 
-      assert queue_to_list(buffer) === [{:stdout, "a"}]
+      assert Buffer.to_list(buffer) === [{:stdout, "a"}]
     end
 
     test "ingest_stderr/2 enqueues {:stderr, data}" do
@@ -141,7 +135,7 @@ defmodule ElixirExec.StreamServer.BufferTest do
         |> Buffer.new()
         |> Buffer.ingest_stderr("e")
 
-      assert queue_to_list(buffer) === [{:stderr, "e"}]
+      assert Buffer.to_list(buffer) === [{:stderr, "e"}]
     end
 
     test "ingestion order is preserved across both channels" do
@@ -152,7 +146,7 @@ defmodule ElixirExec.StreamServer.BufferTest do
         |> Buffer.ingest_stderr("e")
         |> Buffer.ingest_stdout("b")
 
-      assert queue_to_list(buffer) === [{:stdout, "a"}, {:stderr, "e"}, {:stdout, "b"}]
+      assert Buffer.to_list(buffer) === [{:stdout, "a"}, {:stderr, "e"}, {:stdout, "b"}]
     end
   end
 
@@ -225,7 +219,7 @@ defmodule ElixirExec.StreamServer.BufferTest do
         |> Buffer.new()
         |> Buffer.ingest_stderr("err\n")
 
-      assert queue_to_list(buffer) === []
+      assert Buffer.to_list(buffer) === []
       assert Buffer.new(:lines).partial === ""
     end
 
@@ -235,7 +229,7 @@ defmodule ElixirExec.StreamServer.BufferTest do
         |> Buffer.new()
         |> Buffer.ingest_stdout("hello")
 
-      assert queue_to_list(buffer) === []
+      assert Buffer.to_list(buffer) === []
       assert buffer.partial === "hello"
     end
 
@@ -245,7 +239,7 @@ defmodule ElixirExec.StreamServer.BufferTest do
         |> Buffer.new()
         |> Buffer.ingest_stdout("hello\nworld")
 
-      assert queue_to_list(buffer) === ["hello\n"]
+      assert Buffer.to_list(buffer) === ["hello\n"]
       assert buffer.partial === "world"
     end
 
@@ -256,7 +250,7 @@ defmodule ElixirExec.StreamServer.BufferTest do
         |> Buffer.ingest_stdout("hello\nworld")
         |> Buffer.ingest_stdout("\n!")
 
-      assert queue_to_list(buffer) === ["hello\n", "world\n"]
+      assert Buffer.to_list(buffer) === ["hello\n", "world\n"]
       assert buffer.partial === "!"
     end
 
@@ -266,7 +260,7 @@ defmodule ElixirExec.StreamServer.BufferTest do
         |> Buffer.new()
         |> Buffer.ingest_stdout("a\nb\nc\n")
 
-      assert queue_to_list(buffer) === ["a\n", "b\n", "c\n"]
+      assert Buffer.to_list(buffer) === ["a\n", "b\n", "c\n"]
       assert buffer.partial === ""
     end
   end
@@ -288,7 +282,7 @@ defmodule ElixirExec.StreamServer.BufferTest do
         |> Buffer.ingest_stdout("only")
 
       assert {:ok, "only", rest} = Buffer.pop(buffer)
-      assert queue_to_list(rest) === []
+      assert Buffer.to_list(rest) === []
     end
 
     test "returns the head and a new buffer with the tail of the queue" do
@@ -372,7 +366,7 @@ defmodule ElixirExec.StreamServer.BufferTest do
         |> Buffer.ingest_stdout("abc")
         |> Buffer.mark_done()
 
-      assert queue_to_list(buffer) === ["abc"]
+      assert Buffer.to_list(buffer) === ["abc"]
       assert buffer.partial === ""
       assert buffer.done === true
     end
@@ -384,7 +378,7 @@ defmodule ElixirExec.StreamServer.BufferTest do
         |> Buffer.ingest_stdout("a\nb")
         |> Buffer.mark_done()
 
-      assert queue_to_list(buffer) === ["a\n", "b"]
+      assert Buffer.to_list(buffer) === ["a\n", "b"]
       assert buffer.partial === ""
     end
 
@@ -395,7 +389,7 @@ defmodule ElixirExec.StreamServer.BufferTest do
         |> Buffer.ingest_stdout("a\n")
         |> Buffer.mark_done()
 
-      assert queue_to_list(buffer) === ["a\n"]
+      assert Buffer.to_list(buffer) === ["a\n"]
       assert buffer.partial === ""
     end
 
@@ -406,7 +400,7 @@ defmodule ElixirExec.StreamServer.BufferTest do
         |> Buffer.ingest_stdout("a")
         |> Buffer.mark_done()
 
-      assert queue_to_list(buffer) === ["a"]
+      assert Buffer.to_list(buffer) === ["a"]
     end
   end
 

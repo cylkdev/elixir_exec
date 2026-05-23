@@ -9,7 +9,7 @@ elixir_exec/
 │   └── elixir_exec/
 │       ├── application.ex              OTP application — starts ElixirExec.StreamSupervisor.
 │       ├── options.ex                  NimbleOptions schemas + Elixir→Erlang option translation.
-│       ├── os_process.ex               %ElixirExec.Handle{} struct + decode_reason/1.
+│       ├── os_process.ex               %ElixirExec.Stream{} struct + decode_reason/1.
 │       ├── output.ex                   %ElixirExec.Output{} struct + from_proplist/1.
 │       ├── runner.ex                   Validate → swap_stream → :exec.run/run_link → finalize.
 │       ├── stream.ex                   GenServer worker that turns erlexec messages into an Enumerable.
@@ -54,7 +54,7 @@ Test-to-source ratio is roughly 1:1 in line count, which reflects an intentional
 |---|---|---|
 | `ElixirExec` | Public API — the only module library callers should reference. | Public |
 | `ElixirExec.Application` | OTP application callback. | Public (OTP needs to find it) but not user-facing. |
-| `ElixirExec.Handle` | Struct returned from async runs. | Public — appears in return types. |
+| `ElixirExec.Stream` | Struct returned from async runs. | Public — appears in return types. |
 | `ElixirExec.Output` | Struct returned from sync runs. | Public — appears in return types. |
 | `ElixirExec.Options` | Option schemas + Erlang translation. | Internal (`@moduledoc false`). |
 | `ElixirExec.Core` | Implements `run/run_link` orchestration. | Internal. |

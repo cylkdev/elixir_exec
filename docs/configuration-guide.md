@@ -67,7 +67,7 @@ type: {:or, [:boolean, {:in, [:null, :close]}, :string]}
 | `:null` | Connect to `/dev/null`. |
 | `:close` | Close the fd immediately. |
 | `:print` | Print to the BEAM console (debug aid). |
-| `:stream` | **stdout only.** Buffer chunks for `Stream.unfold/2` consumption via `%Handle{}.stream`. Forces `monitor: true` upstream and is incompatible with `sync: true`. |
+| `:stream` | **stdout only.** Buffer chunks for `Stream.unfold/2` consumption via `%Stream{}.stream`. Forces `monitor: true` upstream and is incompatible with `sync: true`. |
 | `:stderr` | Cross-route: send stdout into stderr (only valid for `:stdout`). |
 | `:stdout` | Cross-route: send stderr into stdout (only valid for `:stderr`). |
 | `path :: String.t()` | Redirect to a file. |
@@ -139,7 +139,7 @@ IO.iodata_to_binary(chunks)  # => "hi\n"
 ### Stream a long-running command
 
 ```elixir
-{:ok, %ElixirExec.Handle{stream: stream}} =
+{:ok, %ElixirExec.Stream{stream: stream}} =
   ElixirExec.stream("tail -f /var/log/app.log")
 
 stream
@@ -150,7 +150,7 @@ stream
 ### Monitor mode with mailbox messages
 
 ```elixir
-{:ok, %ElixirExec.Handle{os_pid: os_pid}} =
+{:ok, %ElixirExec.Stream{os_pid: os_pid}} =
   ElixirExec.run("ls /etc", monitor: true, stdout: true)
 
 receive do

@@ -7,46 +7,29 @@ defmodule ElixirExec.StreamServer.Buffer do
   process, sends a message, or watches anyone for exit. Its job is to
   remember what output has arrived but not yet been read, and to
   decide what the next element to emit should be. The
-  `ElixirExec.StreamServer` worker is the one that talks to the outside
-  world; it calls into this module to update the buffer.
+  `ElixirExec.StreamServer` worker talks to the outside world and
+  calls into this module to update the buffer.
 
   ## Modes
 
-  Each buffer is built in one of four modes, picked once at
-  construction:
+  Each buffer is built in one of four modes, fixed at construction:
 
     * `:chunks` — stdout chunks are stored as raw strings, in the
       order they arrived. Stderr is dropped.
-    * `:lines` — stdout chunks are stitched together and split on
-      the configured delim (default `"\\n"`). Each complete line keeps
-      its trailing delim and is queued for emission. Any leftover tail
-      (the bytes after the last delim) is held in the `:partial` field
-      until either more stdout arrives or the program exits. On exit,
-      a non-empty tail is queued as the final element (without a
-      trailing delim). Stderr is dropped.
+
+    * `:lines` — stdout chunks are stitched together and split on the
+      configured delim (default `"\\n"`). Each complete line keeps its
+      trailing delim and is queued for emission. Any leftover tail —
+      the bytes after the last delim — is held in `:partial` until
+      more stdout arrives or the program exits. On exit, a non-empty
+      tail is queued as the final element, without a trailing delim.
+      Stderr is dropped.
+
     * `:stderr` — stderr chunks are stored as raw strings. Stdout is
       dropped.
-    * `:merged` — both channels are stored, each chunk tagged as
+
+    * `:merged` — both streams are stored, each chunk tagged as
       `{:stdout, data}` or `{:stderr, data}`.
-
-  ## Functions
-
-    * `new/1` — build an empty buffer in a chosen mode (default delim `"\\n"` in `:lines` mode).
-    * `new/2` — same, plus a `delim:` option for `:lines` mode.
-    * `attach/3` — remember the program's controller pid and the
-      reference returned when the owning worker watched it for exit.
-      (This module just stores them; the actual watch is set up by
-      the worker.)
-    * `ingest_stdout/2` and `ingest_stderr/2` — feed in a chunk that
-      arrived on the relevant channel.
-    * `pop/1` — take the next element off the front of the queue.
-      Returns `:empty` when there is nothing to give.
-    * `park/2` and `clear_client/1` — remember (and later forget)
-      that one consumer is waiting for the next element.
-    * `mark_done/1` — note that the program has exited. In `:lines`
-      mode this also flushes any partial tail onto the queue.
-    * `exhausted?/1` — true once the program has exited and the queue
-      is empty.
 
   ## Example
 
@@ -77,6 +60,20 @@ defmodule ElixirExec.StreamServer.Buffer do
 
   @enforce_keys [:mode, :queue]
   defstruct [:mode, :queue, :delim, :partial, :done, :client, :port_pid, :monitor_ref]
+
+  @doc """
+  Returns the queue as a list.
+
+  ## Examples
+
+      iex> buffer = ElixirExec.StreamServer.Buffer.new(:chunks)
+      iex> ElixirExec.StreamServer.Buffer.to_list(buffer)
+      []
+  """
+  @spec to_list(t()) :: [element()]
+  def to_list(%__MODULE__{queue: q}) do
+    :queue.to_list(q)
+  end
 
   # ---------------------------------------------------------------------------
   # Construction

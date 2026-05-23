@@ -12,9 +12,12 @@ defmodule ElixirExec.ApplicationTest do
     children = Supervisor.which_children(sup_pid)
 
     assert Enum.any?(children, fn
-      {ElixirExec.StreamSupervisor, child_pid, :supervisor, _} when is_pid(child_pid) -> true
-      _ -> false
-    end)
+             {ElixirExec.StreamSupervisor, child_pid, :supervisor, _} when is_pid(child_pid) ->
+               true
+
+             _ ->
+               false
+           end)
   end
 
   test "registers ElixirExec.StreamSupervisor as a named DynamicSupervisor" do

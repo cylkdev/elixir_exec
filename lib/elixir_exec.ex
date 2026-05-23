@@ -1,19 +1,11 @@
 defmodule ElixirExec do
   @moduledoc """
-  Run and control external programs from Elixir.
+  Runs and controls external programs from Elixir.
 
-  Use this module when you want to launch a shell command (or any other
-  program) from your application and work with what it produces. You can:
-
-    * Wait for the command to finish and get back what it printed.
-    * Start it in the background and get a handle for talking to it later.
-    * Read its output one line at a time as it runs.
-    * Send it input on its stdin, signal it, or stop it.
-
-  Behind the scenes, the heavy lifting is done by an Erlang library called
-  `:erlexec`. This module wraps it so you get a more Elixir-friendly
-  experience: keyword options, structs like `%ElixirExec.Output{}` and
-  `%ElixirExec.Handle{}`, and helpful return values.
+  Start a command, wait for it to finish and capture what it printed, or
+  start it in the background and read its output as it arrives. Send
+  input on stdin, deliver signals, and stop or kill the program when you
+  are done.
 
   ## Examples
 
@@ -36,19 +28,24 @@ defmodule ElixirExec do
       iex> Enum.to_list(stream)
       ["Iter1\\n", "Iter2\\n", "Iter3\\n"]
 
-  ## Things you can do
+  ## Functions
 
-    * `run/2` and `run_link/2` — start a command. Pass `sync: true` to
-      wait for it; otherwise it runs in the background.
-    * `stream/2` — start a command and read its output line by line.
-    * `manage/2` — take over a program you started some other way.
+    * `run/2`, `run_link/2` — start a command, in the background or
+      synchronously.
+
+    * `stream/2` — start a command and read its output one line at a time.
+
+    * `manage/2` — take over a program that was started elsewhere.
+
     * `stop/1`, `stop_and_wait/2`, `kill/2` — end a running command.
-    * `write_stdin/2` — send data to the command's stdin (or `:eof` to
-      close it).
-    * `receive_output/2` and `await_exit/2` — pick up output and exit
-      messages from your mailbox after a background start.
-    * `os_pid/1` and `pid/1` — convert between an Elixir process and the
-      operating-system process id (the same number you'd see in `ps`).
+
+    * `write_stdin/2` — send data to a command's stdin, or close it.
+
+    * `receive_output/2`, `await_exit/2` — pick up output and exit
+      messages from the mailbox.
+
+    * `os_pid/1`, `pid/1` — translate between an Elixir pid and the
+      operating-system pid.
   """
 
   alias ElixirExec.{Core, Handle, Options, Output}
@@ -58,12 +55,13 @@ defmodule ElixirExec do
   # ---------------------------------------------------------------------------
 
   @typedoc """
-  An external command -- a single string or a `[exe | args]` list.
+  A command to run — either a single string or a `[exe | args]` list.
 
-  The string form is parsed by the OS shell, which performs PATH lookup.
-  The list form is executed directly without shell parsing; if `exe` is
-  a bare name (no `/`, `./`, or `../` prefix), it is resolved against
-  `PATH` via `System.find_executable/1` before it is handed to `:exec`.
+  A string is parsed by the OS shell, which also handles `PATH` lookup.
+  A list runs directly, with no shell parsing. When the first list
+  element is a bare name (no `/`, `./`, or `../` prefix), it is resolved
+  against `PATH` first so the list form gets the same lookup as the
+  string form.
   """
   @type command :: String.t() | [String.t()]
 
@@ -79,7 +77,7 @@ defmodule ElixirExec do
   @typedoc "Options accepted by `run/2`, `run_link/2`, `manage/2`, and `stream/2`."
   @type command_options :: keyword()
 
-  @typedoc "Options accepted by the `:exec` start function."
+  @typedoc "Options accepted by the underlying runner's start function."
   @type exec_options :: keyword()
 
   # ---------------------------------------------------------------------------
@@ -87,56 +85,60 @@ defmodule ElixirExec do
   # ---------------------------------------------------------------------------
 
   @doc """
-  Starts an external command and returns either a handle for talking to
-  it later or its captured output.
+  Starts an external command.
 
-  ## Parameters
+  `command` is either a single string (parsed by the OS shell, which
+  handles `PATH` lookup) or a `[exe | args]` list (executed directly,
+  with no shell parsing). When the first list element is a bare name —
+  no `/`, `./`, or `../` prefix — it is resolved against `PATH` so the
+  list form gets the same lookup as the string form.
 
-    - `command` - `String.t() | [String.t()]`. The command to run. A
-      single string is parsed by the OS shell; a `[exe | args]` list is
-      executed directly without shell parsing. If `exe` is a bare name
-      (no `/`, `./`, or `../` prefix), it is resolved against `PATH`
-      via `System.find_executable/1` so list-form callers get the same
-      lookup behaviour as the string form.
-    - `options` - `keyword()`. Run options. Notable keys:
-        * `:sync` (boolean) — block until the command exits and capture
-          output.
-        * `:monitor` (boolean) — deliver `{:stdout, _, _}`,
-          `{:stderr, _, _}`, and `:DOWN` messages to the calling
-          process.
-        * `:stdout` / `:stderr` — output handling. Accepts `true`,
-          `false`, `:null`, `:close`, `:print`, `:stream` (stdout only),
-          the opposite atom for cross-routing, a path string, a
-          `{path, file_opts}` tuple, a pid, or a 3-arity function.
-        * `:stdin` — `true`, `false`, `:null`, `:close`, or a string
-          path.
-        * `:executable`, `:cd`, `:env`, `:kill_command`,
-          `:kill_timeout`, `:kill_group`, `:group`, `:user`,
-          `:success_exit_code`, `:nice`, `:pty`, `:pty_echo`, `:winsz`,
-          `:capabilities`, `:debug`.
-      Unknown keys are rejected before any program is started. Defaults
-      to `[]`.
+  By default the command runs in the background and the call returns
+  right away with a handle. Pass `sync: true` to wait for the command
+  to finish and get back what it printed instead. Unknown options are
+  rejected up front — no program is started until validation passes.
 
-  ## Returns
+  ## Options
 
-  `{:ok, %ElixirExec.Handle{}}` for an asynchronous run. The struct's
-  `:controller` is the Elixir pid managing the program; `:os_pid` is
-  the operating-system pid; `:stream` is `nil` unless `stdout: :stream`
+    * `:sync` — wait for the command to exit and return its captured
+      output. Boolean. Default `false`.
+
+    * `:monitor` — deliver `{:stdout, _, _}`, `{:stderr, _, _}`, and
+      `:DOWN` messages to the calling process. Boolean. Default `false`.
+
+    * `:stdout`, `:stderr` — how each output stream is handled. One of
+      `true`, `false`, `:null`, `:close`, `:print`, `:stream` (stdout
+      only), the other stream's atom (to cross-route), a path string, a
+      `{path, file_opts}` tuple, a pid, or a 3-arity function.
+
+    * `:stdin` — `true`, `false`, `:null`, `:close`, or a path string.
+
+    * `:executable`, `:cd`, `:env`, `:kill_command`, `:kill_timeout`,
+      `:kill_group`, `:group`, `:user`, `:success_exit_code`, `:nice`,
+      `:pty`, `:pty_echo`, `:winsz`, `:capabilities`, `:debug` — passed
+      through to the underlying runner.
+
+  ## Return values
+
+  Returns `{:ok, %ElixirExec.Handle{}}` for a background run. The
+  handle's `:controller` is the Elixir pid running the program;
+  `:os_pid` is the OS pid; `:stream` is `nil` unless `stdout: :stream`
   was passed, in which case `:stream` is an `Enumerable` over the
   program's line-by-line stdout.
 
-  `{:ok, %ElixirExec.Output{}}` when `sync: true` was passed. The
-  struct's `:stdout` and `:stderr` lists hold the captured chunks in
-  arrival order.
+  Returns `{:ok, %ElixirExec.Output{}}` when `sync: true` was passed.
+  The struct's `:stdout` and `:stderr` lists hold the captured chunks
+  in the order they arrived.
 
-  `{:error, %NimbleOptions.ValidationError{}}` when option validation
-  fails — the program is never started.
+  Returns `{:error, %NimbleOptions.ValidationError{}}` when option
+  validation fails. The program is never started.
 
-  `{:error, {:illegal_combination, :sync_with_stream}}` when both
-  `sync: true` and `stdout: :stream` are passed; these two are mutually
-  exclusive.
+  Returns `{:error, {:illegal_combination, :sync_with_stream}}` when
+  `sync: true` and `stdout: :stream` are both passed. The two cannot
+  be combined.
 
-  `{:error, term()}` when `:erlexec` itself rejects the command.
+  Returns `{:error, term()}` when the underlying runner refuses the
+  command.
 
   ## Examples
 
@@ -159,21 +161,15 @@ defmodule ElixirExec do
   def run(command, options \\ []), do: Core.run(:run, command, options)
 
   @doc """
-  Starts an external command exactly like `run/2`, but links the calling
-  process to the program's controller pid so the two share fate.
+  Starts an external command, linked to the caller.
 
-  ## Parameters
+  Identical to `run/2` in every way except one: the calling process is
+  linked to the program's controller pid. If either side exits, the
+  other receives an `:EXIT` signal carrying the reason. Call
+  `Process.flag(:trap_exit, true)` first if you want to handle the
+  signal without crashing.
 
-    - `command` - `String.t() | [String.t()]`. Same shape as `run/2`.
-    - `options` - `keyword()`. Same options as `run/2`. Defaults to `[]`.
-
-  ## Returns
-
-  Same return shapes as `run/2`. The behavioural difference is the
-  link: when the controller exits, the calling process receives an
-  `:EXIT` signal carrying the exit reason, and vice versa. Pair with
-  `Process.flag(:trap_exit, true)` if you want to handle abnormal
-  exits without crashing the caller.
+  Arguments, options, and return values match `run/2` exactly.
 
   ## Examples
 
@@ -199,43 +195,40 @@ defmodule ElixirExec do
   def run_link(command, options \\ []), do: Core.run(:run_link, command, options)
 
   @doc """
-  Starts an external command and returns a handle whose `:stream` field
-  is an `Enumerable` over the command's line-by-line stdout.
+  Starts an external command and reads its stdout one line at a time.
 
-  ## Parameters
+  The returned handle's `:stream` field is an `Enumerable` over each
+  line the program writes. Lines keep their trailing delimiter. When
+  the program exits and the buffer drains, iteration ends cleanly —
+  `Enum.take/2` and other early-termination operations work as usual.
 
-    - `command` - `String.t() | [String.t()]`. Same shape as `run/2`.
-    - `options` - `keyword()`. Same options as `run/2`, except
-      `:monitor` is forced to `true` and `:stdout` is forced to
-      `:stream`. Defaults to `[]`. Note that `sync: true` is rejected —
-      see Returns.
+  Takes the same arguments as `run/2`, with two forced settings:
+  `monitor: true` and `stdout: :stream`. Passing `sync: true` is
+  rejected, since waiting for the command to finish would defeat
+  streaming.
 
-  ## Options (in addition to all `run/2` options)
+  ## Options
 
-    * `:delim` — non-empty binary used to split stdout into lines.
-      Default `"\\n"`. Each emitted line keeps its trailing delim. Any
-      incomplete tail at end-of-stream is emitted without a trailing
-      delim. Only meaningful here, where `stdout: :stream` is forced.
+  All `run/2` options, plus:
 
-    * `:drain` — boolean, default `true`. After enumeration ends, the
-      returned `enum` consumes one leftover `:DOWN` message left in the
-      caller's mailbox by the forced `monitor: true`. Set to `false` if
-      you want to receive that `:DOWN` yourself (e.g. for lifecycle
-      observability).
+    * `:delim` — a non-empty binary used to split stdout into lines.
+      Defaults to `"\\n"`. Each emitted line keeps its trailing
+      delimiter. Any incomplete tail at the end of the stream is
+      emitted as the last element, without a trailing delimiter.
+    * `:drain` — boolean, default `true`. When iteration ends, the
+      stream pulls the one leftover `:DOWN` message that `monitor: true`
+      leaves in the caller's mailbox. Set to `false` to receive that
+      `:DOWN` yourself.
 
-  ## Returns
+  ## Return values
 
-  `{:ok, %ElixirExec.Handle{stream: stream}}` on success. The
-  `:stream` is a regular Elixir enumerable (built from
-  `Stream.unfold/2`) over each line the command writes to stdout, with
-  the trailing `"\\n"` kept. Iteration ends cleanly when the program
-  exits and the buffer has drained, supporting `Enum.take/2` and other
-  early-termination operations.
+  Returns `{:ok, %ElixirExec.Handle{stream: stream}}` on success.
 
-  `{:error, {:illegal_combination, :sync_with_stream}}` when
-  `sync: true` was passed alongside the implicit `:stream` mode.
+  Returns `{:error, {:illegal_combination, :sync_with_stream}}` when
+  `sync: true` was passed.
 
-  `{:error, term()}` for any other validation or dispatch failure.
+  Returns `{:error, term()}` for any other validation or dispatch
+  failure.
 
   ## Examples
 
@@ -248,36 +241,31 @@ defmodule ElixirExec do
       iex> {:error, {:illegal_combination, :sync_with_stream}} =
       ...>   ElixirExec.stream("echo hi", sync: true)
   """
-  @spec stream(command(), command_options()) ::
-          {:ok, Handle.t()} | {:error, term()}
+  @spec stream(command(), command_options()) :: {:ok, Handle.t()} | {:error, term()}
   def stream(command, options \\ []) do
-    options = Keyword.merge(options, monitor: true, stdout: :stream)
-    run(command, options)
+    run(command, Keyword.merge(options, monitor: true, stdout: :stream))
   end
 
   @doc """
-  Takes ownership of an OS process or port that was started outside
-  this library so it can be controlled like any other managed command.
+  Takes ownership of an OS process or port that was started elsewhere.
 
-  ## Parameters
+  Pass either an OS pid (the integer you'd see in `ps`) or an Erlang
+  port pointing at the process. `options` accepts the same keys as
+  `run/2`, applied to the adopted process from now on.
 
-    - `target` - `non_neg_integer() | port()`. An OS pid (the integer
-      you'd see in `ps`) or an Erlang port pointing at the process.
-    - `options` - `keyword()`. Same option set as `run/2`, applied to
-      the adopted process going forward. Defaults to `[]`.
+  Once the call returns `{:ok, handle}`, the handle's `:controller`
+  and `:os_pid` work with every `ElixirExec` control function —
+  `stop/1`, `kill/2`, `write_stdin/2`, `os_pid/1`, and so on.
 
-  ## Returns
+  ## Return values
 
-  `{:ok, %ElixirExec.Handle{}}` on success. From this point on the
-  returned struct's `:controller` and `:os_pid` are valid for every
-  `ElixirExec` control function (`stop/1`, `kill/2`, `write_stdin/2`,
-  `os_pid/1`, etc.).
+  Returns `{:ok, %ElixirExec.Handle{}}` on success.
 
-  `{:error, %NimbleOptions.ValidationError{}}` when option validation
-  fails before `:erlexec` is called.
+  Returns `{:error, %NimbleOptions.ValidationError{}}` when option
+  validation fails. The process is not adopted.
 
-  `{:error, term()}` when `:erlexec` itself refuses to take ownership
-  (for example, the OS pid no longer exists).
+  Returns `{:error, term()}` when the underlying runner refuses to
+  take ownership — for example, if the OS pid no longer exists.
 
   ## Examples
 
@@ -316,24 +304,20 @@ defmodule ElixirExec do
   @doc """
   Asks a running command to stop, gracefully.
 
-  ## Parameters
+  Pass the controller pid, the OS pid, or the underlying port —
+  whichever you have on hand.
 
-    - `target` - `pid() | non_neg_integer() | port()`. The controller
-      pid, the OS pid, or the underlying port — whichever you have on
-      hand.
-
-  ## Returns
-
-  `:ok` once the stop request has been accepted. The actual exit may
-  arrive later — wait for it via `await_exit/2` or by listening for
+  The stop request is accepted right away, but the actual exit may
+  arrive later. Wait for it with `await_exit/2`, or by listening for
   the `:DOWN` message if the command was started with `monitor: true`.
 
-  `{:error, term()}` if the target is unknown to `:erlexec`.
+  The `:kill_command` and `:kill_timeout` options the command was
+  started with are honoured. With neither set, the default is to send
+  `SIGTERM` first, escalating to `SIGKILL` if the program has not
+  exited within its kill timeout.
 
-  The stop honours the `:kill_command` and `:kill_timeout` options the
-  command was started with. If neither was set, `:erlexec`'s default
-  is to send `SIGTERM` first and escalate to `SIGKILL` if the program
-  hasn't exited within its kill timeout.
+  Returns `:ok` once the stop request has been accepted, or
+  `{:error, term()}` when the target is unknown.
 
   ## Examples
 
@@ -346,25 +330,19 @@ defmodule ElixirExec do
   def stop(target), do: :exec.stop(target)
 
   @doc """
-  Stops a running command and waits up to `timeout` milliseconds for it
-  to exit.
+  Stops a running command and waits for it to exit.
 
-  ## Parameters
+  Pass the same kind of `target` as `stop/1` (controller pid, OS pid,
+  or port). `timeout` is the most milliseconds to wait — defaults to
+  `5_000`.
 
-    - `target` - `pid() | non_neg_integer() | port()`. Same shapes as
-      `stop/1`.
-    - `timeout` - `pos_integer()`. Maximum milliseconds to wait.
-      Defaults to `5_000`.
+  Returns the decoded exit reason once the program has exited —
+  usually an integer status code or a tuple like `{:exit_status, n}`.
+  Note that the success return is the raw reason itself, not a
+  `{:ok, reason}` wrapper.
 
-  ## Returns
-
-  The decoded exit reason from `:erlexec` — typically an integer
-  status code or a tuple like `{:exit_status, n}` — once the program
-  has actually exited. Note that the success return is the raw exit
-  reason, not a `{:ok, status}` wrapper.
-
-  `{:error, term()}` if the program does not exit within `timeout`,
-  or if the target is unknown to `:erlexec`.
+  Returns `{:error, term()}` when the program is still alive after
+  `timeout`, or when the target is unknown.
 
   ## Examples
 
@@ -374,28 +352,23 @@ defmodule ElixirExec do
       ElixirExec.stop_and_wait(pid, 1_000)
   """
   @spec stop_and_wait(pid() | os_pid() | port(), pos_integer()) :: term() | {:error, term()}
-  def stop_and_wait(target, timeout \\ 5_000), do: :exec.stop_and_wait(target, timeout)
+  def stop_and_wait(target, timeout \\ 5_000) do
+    :exec.stop_and_wait(target, timeout)
+  end
 
   @doc """
   Sends a Unix signal to a running command.
 
-  ## Parameters
+  Pass the controller pid, OS pid, or port as `target`. The signal can
+  be an integer number (`9` for SIGKILL, `15` for SIGTERM) or an atom
+  name (`:sigkill`, `:sigterm`, `:sighup`, and so on) — either form
+  works.
 
-    - `target` - `pid() | non_neg_integer() | port()`. The controller
-      pid, the OS pid, or the underlying port.
-    - `signal` - `pos_integer() | atom()`. The signal to send. Either
-      an integer signal number (`9` for SIGKILL, `15` for SIGTERM) or
-      the atom name (`:sigkill`, `:sigterm`, `:sighup`, etc.). Atoms
-      are converted via `signal_to_int/1` before dispatch.
+  Returns `:ok` once the signal is delivered. The program's actual
+  death (if any) arrives later — wait for it with `await_exit/2`, or
+  handle the `:DOWN` message from a monitored run.
 
-  ## Returns
-
-  `:ok` once the signal has been delivered to `:erlexec`. The
-  program's actual death (if any) arrives asynchronously — wait for
-  it with `await_exit/2` or by handling the `:DOWN` message from a
-  monitored run.
-
-  `{:error, term()}` if the target is unknown to `:erlexec`.
+  Returns `{:error, term()}` when the target is unknown.
 
   ## Examples
 
@@ -411,27 +384,25 @@ defmodule ElixirExec do
       end
   """
   @spec kill(pid() | os_pid() | port(), signal() | atom()) :: :ok | {:error, term()}
-  def kill(target, signal) when is_atom(signal),
-    do: :exec.kill(target, :exec.signal_to_int(signal))
+  def kill(target, signal) when is_atom(signal) do
+    :exec.kill(target, :exec.signal_to_int(signal))
+  end
 
-  def kill(target, signal) when is_integer(signal),
-    do: :exec.kill(target, signal)
+  def kill(target, signal) when is_integer(signal) do
+    :exec.kill(target, signal)
+  end
 
   @doc """
-  Sends data to a running command's standard input, or closes its stdin.
+  Sends data to a running command's standard input, or closes it.
 
-  ## Parameters
+  Pass the controller pid or OS pid of a command that was started with
+  `stdin: true`. `data` is either the bytes to write or the atom
+  `:eof`, which closes the stream.
 
-    - `target` - `pid() | non_neg_integer()`. The controller pid or the
-      OS pid of a command started with `stdin: true`.
-    - `data` - `binary() | :eof`. The bytes to write, or `:eof` to
-      close the command's stdin stream.
+  Programs that keep reading until end-of-file — `cat`, `wc`, `sort` —
+  will continue until you send `:eof`.
 
-  ## Returns
-
-  `:ok`. Always — there is no error return. Programs that read from
-  stdin until EOF (`cat`, `wc`, `sort`, etc.) will keep reading until
-  you pass `:eof`.
+  Always returns `:ok`.
 
   ## Examples
 
@@ -447,27 +418,20 @@ defmodule ElixirExec do
       :ok = ElixirExec.write_stdin(cat_pid, :eof)
   """
   @spec write_stdin(pid() | os_pid(), binary() | :eof) :: :ok
-  def write_stdin(target, data), do: :exec.send(target, data)
+  def write_stdin(target, data) do
+    :exec.send(target, data)
+  end
 
   @doc """
   Changes the process-group id of a running OS process.
 
-  ## Parameters
+  An invalid `gid` can cause the underlying runner to crash with an
+  exit instead of returning a clean `{:error, _}`. Wrap the call in a
+  `try/catch :exit` when the `gid` is not under your control.
 
-    - `os_pid` - `non_neg_integer()`. The OS pid of the program whose
-      process group is being changed.
-    - `gid` - `non_neg_integer()`. The new process-group id.
-
-  ## Returns
-
-  `:ok` on success.
-
-  `{:error, term()}` if `:erlexec` rejects the call.
-
-  This delegates to `:exec.setpgid/2`. An invalid `gid` may cause the
-  underlying `:exec` GenServer to crash with an exit, rather than
-  returning a clean `{:error, _}` — wrap calls in a `try/catch :exit`
-  when handling unknown values.
+  Pass the OS pid of the program and the new process-group id.
+  Returns `:ok` on success, or `{:error, term()}` when the call is
+  rejected.
 
   ## Examples
 
@@ -484,7 +448,9 @@ defmodule ElixirExec do
       end
   """
   @spec set_gid(os_pid(), non_neg_integer()) :: :ok | {:error, term()}
-  def set_gid(os_pid, gid), do: :exec.setpgid(os_pid, gid)
+  def set_gid(os_pid, gid) do
+    :exec.setpgid(os_pid, gid)
+  end
 
   # ---------------------------------------------------------------------------
   # Identity round-trips
@@ -493,18 +459,12 @@ defmodule ElixirExec do
   @doc """
   Looks up the OS pid for an Elixir controller pid.
 
-  ## Parameters
+  Returns `{:ok, os_pid}` with the operating-system pid the controller
+  is currently managing.
 
-    - `pid` - `pid()`. The Elixir pid that owns the managed program.
-
-  ## Returns
-
-  `{:ok, os_pid}` where `os_pid` is the operating-system pid that the
-  controller is currently managing.
-
-  `{:error, term()}` when the pid is not currently managing an OS
-  process — for example, if the program has exited or the pid was
-  never an `:erlexec` controller.
+  Returns `{:error, term()}` when the pid is not managing an OS
+  process — for example, when the program has exited, or when the pid
+  was never a controller.
 
   ## Examples
 
@@ -527,21 +487,13 @@ defmodule ElixirExec do
   @doc """
   Looks up the Elixir controller pid for an OS pid.
 
-  ## Parameters
+  Returns `{:ok, pid}` with the Elixir pid managing that OS process.
 
-    - `os_pid` - `non_neg_integer()`. The operating-system pid to look
-      up.
+  Returns `{:error, :undefined}` when no controller is managing the OS
+  pid — for example, when the program has exited or the pid was never
+  managed by this library.
 
-  ## Returns
-
-  `{:ok, pid}` where `pid` is the Elixir pid managing that OS process.
-
-  `{:error, :undefined}` when no controller is managing that OS pid —
-  for example, if the program has exited, or the pid was never managed
-  by this library.
-
-  `{:error, term()}` for any other lookup failure surfaced by
-  `:erlexec`.
+  Returns `{:error, term()}` for any other lookup failure.
 
   ## Examples
 
@@ -567,16 +519,12 @@ defmodule ElixirExec do
   # ---------------------------------------------------------------------------
 
   @doc """
-  Lists the OS pids of every program currently being managed by
-  `:erlexec` across the whole node.
+  Lists the OS pids of every program currently managed by this library
+  on the local node.
 
-  ## Returns
-
-  A list of OS pids (non-negative integers). The list reflects only
-  programs known to `:erlexec`'s registry — programs spawned outside
-  the library and not adopted via `manage/2` are not included. Order
-  is not guaranteed and should not be relied on. Returns `[]` when
-  nothing is being managed.
+  Programs that were spawned elsewhere and never adopted via `manage/2`
+  do not appear. Order is not guaranteed. Returns `[]` when nothing is
+  being managed.
 
   ## Examples
 
@@ -589,27 +537,22 @@ defmodule ElixirExec do
       ElixirExec.kill(sleep_os_pid, 9)
   """
   @spec which_children() :: [os_pid()]
-  def which_children(), do: :exec.which_children()
+  def which_children do
+    :exec.which_children()
+  end
 
   @doc """
-  Decodes a raw `wait`-style exit code into a structured tuple.
+  Decodes a raw `wait(2)`-style exit code into a structured tuple.
 
-  ## Parameters
+  Returns `{:status, code}` when the program exited on its own.
+  `code` is the integer exit status — `0` for success, non-zero for a
+  caller-defined failure.
 
-    - `exit_code` - `non_neg_integer()`. A raw `wait(2)`-style status,
-      usually obtained from a child process's exit reason.
-
-  ## Returns
-
-  `{:status, code}` when the program exited normally; `code` is the
-  program's integer exit status (`0` for success, non-zero for the
-  caller-defined failure code).
-
-  `{:signal, signal_name_or_int, core_dumped?}` when the program was
-  killed by a signal. `signal_name_or_int` is the atom name of the
-  signal (e.g. `:sighup`) when `:erlexec` recognises it, or the raw
-  integer otherwise. `core_dumped?` is `true` when the kernel
-  produced a core dump for the program.
+  Returns `{:signal, name_or_number, core_dumped?}` when the program
+  was killed by a signal. `name_or_number` is the atom name of the
+  signal (for example `:sighup`) when it is recognised, otherwise the
+  raw integer. `core_dumped?` is `true` when the kernel produced a
+  core dump.
 
   ## Examples
 
@@ -623,23 +566,15 @@ defmodule ElixirExec do
       {:signal, :sighup, false}
   """
   @spec status(exit_code()) :: {:status, exit_code()} | {:signal, atom() | integer(), boolean()}
-  def status(exit_code), do: :exec.status(exit_code)
+  def status(exit_code) do
+    :exec.status(exit_code)
+  end
 
   @doc """
   Looks up the atom name for an integer signal number.
 
-  ## Parameters
-
-    - `signal` - `integer()`. A POSIX signal number (e.g. `15` for
-      SIGTERM).
-
-  ## Returns
-
-  The atom name corresponding to `signal` (e.g. `:sigterm`) when
-  `:erlexec` recognises the integer.
-
-  The original integer, unchanged, when `:erlexec` does not have a
-  mapping for it.
+  Returns the matching atom — for example `:sigterm` for `15` — when
+  the number is recognised, or the original integer otherwise.
 
   ## Examples
 
@@ -650,23 +585,17 @@ defmodule ElixirExec do
       :sigkill
   """
   @spec signal(integer()) :: atom() | integer()
-  def signal(signal), do: :exec.signal(signal)
+  def signal(signal) do
+    :exec.signal(signal)
+  end
 
   @doc """
-  Looks up the integer signal number for an atom name, or passes an
+  Returns the integer signal number for an atom name, or passes an
   integer through unchanged.
 
-  ## Parameters
-
-    - `signal` - `atom() | integer()`. Either a POSIX signal atom
-      (e.g. `:sigterm`) or an integer signal number.
-
-  ## Returns
-
-  The integer signal number corresponding to `signal`. Atom inputs
-  are resolved via `:exec.signal_to_int/1`; integer inputs pass
-  through unchanged so the function can be used as a normaliser
-  regardless of which form the caller has.
+  Use this when you have a signal in either form and want the
+  integer. Atom names like `:sigterm` are resolved to their POSIX
+  number; integer inputs are returned as-is.
 
   ## Examples
 
@@ -677,30 +606,26 @@ defmodule ElixirExec do
       15
   """
   @spec signal_to_int(atom() | integer()) :: integer()
-  def signal_to_int(signal) when is_integer(signal), do: signal
-  def signal_to_int(signal) when is_atom(signal), do: :exec.signal_to_int(signal)
+  def signal_to_int(signal) when is_integer(signal) do
+    signal
+  end
+
+  def signal_to_int(signal) when is_atom(signal) do
+    :exec.signal_to_int(signal)
+  end
 
   @doc """
   Tells a pty-attached command that its terminal window has been
   resized.
 
-  ## Parameters
+  Pass the controller pid or OS pid of a command started with `pty:
+  true` (or `pty: [_]`), along with the new `rows` and `cols`. The
+  command sees this exactly as if a real terminal had been resized —
+  useful for full-screen programs like `htop`, `vim`, and `less` that
+  draw based on window size.
 
-    - `target` - `pid() | non_neg_integer()`. The controller pid or OS
-      pid of a command started with `pty: true` (or `pty: [_]`).
-    - `rows` - `pos_integer()`. New row count.
-    - `cols` - `pos_integer()`. New column count.
-
-  ## Returns
-
-  `:ok` when the resize was delivered.
-
-  `{:error, term()}` if the target is unknown to `:erlexec`, or was
-  not started with a pty attached.
-
-  The command sees this exactly as if a real terminal had been
-  resized — useful for full-screen programs (`htop`, `vim`, `less`)
-  that draw based on the current window geometry.
+  Returns `:ok` once the resize is delivered, or `{:error, term()}`
+  when the target is unknown or was not started with a pty.
 
   ## Examples
 
@@ -710,26 +635,21 @@ defmodule ElixirExec do
       :ok = ElixirExec.winsz(pid, 24, 80)
   """
   @spec winsz(pid() | os_pid(), pos_integer(), pos_integer()) :: :ok | {:error, term()}
-  def winsz(target, rows, cols), do: :exec.winsz(target, rows, cols)
+  def winsz(target, rows, cols) do
+    :exec.winsz(target, rows, cols)
+  end
 
   @doc """
   Updates the pty (pseudo-terminal) settings of a running pty-attached
   command.
 
-  ## Parameters
+  Pass the controller pid or OS pid of a command started with a pty,
+  along with the options to apply. The options are forwarded to the
+  underlying runner without further validation.
 
-    - `target` - `pid() | non_neg_integer()`. The controller pid or OS
-      pid of a command started with a pty attached.
-    - `opts` - `keyword()`. Pty options to apply. The shape is whatever
-      `:exec.pty_opts/2` accepts; this library does not validate them.
-
-  ## Returns
-
-  `:ok` when the update was accepted.
-
-  `{:error, term()}` when `:erlexec` rejects the call — typically
-  because the target was not started with a pty, or because an option
-  is unknown to `:erlexec`.
+  Returns `:ok` when the update is accepted, or `{:error, term()}`
+  when the call is rejected — typically because the target was not
+  started with a pty, or an option is not recognised.
 
   ## Examples
 
@@ -739,7 +659,9 @@ defmodule ElixirExec do
       :ok = ElixirExec.pty_opts(pid, echo: false)
   """
   @spec pty_opts(pid() | os_pid(), keyword()) :: :ok | {:error, term()}
-  def pty_opts(target, opts), do: :exec.pty_opts(target, opts)
+  def pty_opts(target, opts) do
+    :exec.pty_opts(target, opts)
+  end
 
   # ---------------------------------------------------------------------------
   # Receive helpers
@@ -749,29 +671,23 @@ defmodule ElixirExec do
   Pulls the next message for `os_pid` out of the calling process's
   mailbox.
 
-  ## Parameters
+  Messages flow to the mailbox only when the command was started with
+  `monitor: true` and the appropriate `:stdout` / `:stderr` options.
+  `timeout` is the most milliseconds to wait — defaults to `5_000`.
 
-    - `os_pid` - `non_neg_integer()`. The OS pid the messages are
-      tagged with. Messages flow only when the command was started
-      with `monitor: true` and the appropriate `:stdout` / `:stderr`
-      options.
-    - `timeout` - `timeout()`. Maximum milliseconds to wait. Defaults
-      to `5_000`.
+  Returns one of:
 
-  ## Returns
+    * `{:stdout, data}` — a stdout chunk the program wrote.
 
-  `{:stdout, data}` when a stdout chunk is available; `data` is the
-  binary the program wrote.
+    * `{:stderr, data}` — a stderr chunk the program wrote.
 
-  `{:stderr, data}` when a stderr chunk is available.
+    * `{:exit, status}` — the program has exited. `status` is the
+      decoded exit reason: `0` for a clean exit, the integer code from
+      `{:exit_status, n}`, or the raw reason otherwise (see
+      `ElixirExec.Handle.decode_reason/1`).
 
-  `{:exit, status}` when the program has exited; `status` is the
-  decoded exit reason — `0` for `:normal`, the integer code for
-  `{:exit_status, n}`, or the raw reason for anything else (see
-  `ElixirExec.Handle.decode_reason/1`).
-
-  `:timeout` when nothing arrives within `timeout` milliseconds. The
-  call does not consume any non-matching messages from the mailbox.
+    * `:timeout` — nothing arrived in time. No other messages in the
+      mailbox are consumed.
 
   ## Examples
 
@@ -802,27 +718,22 @@ defmodule ElixirExec do
   Waits for a command to exit, discarding any stdout or stderr messages
   that arrive in the meantime.
 
-  ## Parameters
+  The command must have been started with `monitor: true` for the
+  `:DOWN` message this call waits on to be delivered.
 
-    - `target` - `pid() | non_neg_integer()`. The controller pid or
-      OS pid. Pid inputs are resolved to the OS pid via `os_pid/1`.
-    - `timeout` - `timeout()`. Maximum milliseconds to wait. Defaults
-      to `:infinity` — there is no implicit deadline, so be sure that
-      is what you want.
+  Pass the controller pid or the OS pid as `target`. A pid input is
+  resolved to an OS pid first. `timeout` is the most milliseconds to
+  wait and defaults to `:infinity` — there is no implicit deadline, so
+  be sure that is what you want.
 
-  ## Returns
-
-  `{:ok, status}` once the program has exited; `status` is the
+  Returns `{:ok, status}` once the program has exited. `status` is the
   decoded exit reason (see `ElixirExec.Handle.decode_reason/1`).
 
-  `{:error, :timeout}` if the program is still alive when `timeout`
-  milliseconds pass.
+  Returns `{:error, :timeout}` when the program is still alive after
+  `timeout` milliseconds.
 
-  `{:error, term()}` if a `pid` argument cannot be resolved to an OS
-  pid.
-
-  The command must have been started with `monitor: true` for the
-  `:DOWN` message this function waits on to be delivered.
+  Returns `{:error, term()}` when a pid argument cannot be resolved to
+  an OS pid.
 
   ## Examples
 

@@ -19,13 +19,13 @@ First release of `elixir_exec`. The Hex package metadata in `mix.exs` declares t
   - Identity round-trips: `os_pid/1`, `pid/1`, `which_children/0`.
   - Decoders: `status/1`, `signal/1`, `signal_to_int/1`.
   - Mailbox helpers: `receive_output/2`, `await_exit/2`.
-- Result structs: `%ElixirExec.Handle{}` (async) and `%ElixirExec.Output{}` (sync).
+- Result structs: `%ElixirExec.Stream{}` (async) and `%ElixirExec.Output{}` (sync).
 - Two-stage option validation (`ElixirExec.Options`): NimbleOptions schema + cross-key illegal-combination checks. Currently rejects `sync: true` with `stdout: :stream` as `{:illegal_combination, :sync_with_stream}`.
 - Streaming subsystem:
   - `ElixirExec.StreamSupervisor` — `DynamicSupervisor` (`:one_for_one`, `:temporary` children).
   - `ElixirExec.Stream` — GenServer worker with race-free `attach/2`, parking semantics, and clean `:DOWN`-driven shutdown.
   - `ElixirExec.Stream.Buffer` — pure data type with `:lines`, `:chunks`, `:stderr`, and `:merged` modes.
-- Test suite covering the public API end-to-end with real OS processes, plus pure-module unit tests for `Options`, `Output`, `Handle`, and `Buffer`. Doctests on `ElixirExec`, `Output`, and `Buffer`.
+- Test suite covering the public API end-to-end with real OS processes, plus pure-module unit tests for `Options`, `Output`, `Stream`, and `Buffer`. Doctests on `ElixirExec`, `Output`, and `Buffer`.
 - Tooling configuration: ExCoveralls (HTML/LCOV/JSON), Codecov gates, Dialyzer with `:unmatched_returns` + `:no_improper_lists`, Credo `strict: true` with `BlitzCredoChecks` pack, ExDoc with `ElixirExec` as the main module.
 - Project documentation under `docs/`:
   - `project-overview-pdr.md`, `system-architecture.md`, `api-reference.md`, `configuration-guide.md`, `code-standards.md`, `testing-guide.md`, `codebase-summary.md`, `changelog.md`.

@@ -4,7 +4,7 @@ An idiomatic Elixir wrapper for [`erlexec`](https://hex.pm/packages/erlexec) —
 
 `elixir_exec` lets you launch external programs from your application and work with what they produce. You can wait for a command to finish and read what it printed, start it in the background and get a handle for talking to it later, read its output one line at a time as it runs, or send it input on stdin, signal it, and stop it.
 
-The heavy lifting is done by `:erlexec`. This library wraps it so callers get a more Elixir-friendly experience: keyword options validated up-front, structs like `%ElixirExec.Output{}` and `%ElixirExec.Handle{}`, and `Stream`-based output iteration.
+The heavy lifting is done by `:erlexec`. This library wraps it so callers get a more Elixir-friendly experience: keyword options validated up-front, structs like `%ElixirExec.Output{}` and `%ElixirExec.Stream{}`, and `Stream`-based output iteration.
 
 ## Installation
 
@@ -34,7 +34,7 @@ iex> {:ok, %ElixirExec.Output{stdout: ["hi\n"], stderr: []}} =
 ### Run a command in the background and read messages from your mailbox
 
 ```elixir
-iex> {:ok, %ElixirExec.Handle{os_pid: os_pid}} =
+iex> {:ok, %ElixirExec.Stream{os_pid: os_pid}} =
 ...>   ElixirExec.run("echo hi", monitor: true, stdout: true)
 iex> {:stdout, "hi\n"} = ElixirExec.receive_output(os_pid)
 iex> {:exit, 0} = ElixirExec.receive_output(os_pid)
@@ -43,7 +43,7 @@ iex> {:exit, 0} = ElixirExec.receive_output(os_pid)
 ### Stream a command's stdout line by line
 
 ```elixir
-iex> {:ok, %ElixirExec.Handle{stream: stream}} =
+iex> {:ok, %ElixirExec.Stream{stream: stream}} =
 ...>   ElixirExec.stream("for i in 1 2 3; do echo Iter$i; done")
 iex> Enum.to_list(stream)
 ["Iter1\n", "Iter2\n", "Iter3\n"]
@@ -52,7 +52,7 @@ iex> Enum.to_list(stream)
 ### Send input on stdin
 
 ```elixir
-{:ok, %ElixirExec.Handle{controller: cat_pid, os_pid: cat_os_pid}} =
+{:ok, %ElixirExec.Stream{controller: cat_pid, os_pid: cat_os_pid}} =
   ElixirExec.run_link("cat", stdin: true, stdout: true)
 
 :ok = ElixirExec.write_stdin(cat_pid, "hi\n")
@@ -64,7 +64,7 @@ iex> Enum.to_list(stream)
 ### Stop a running command
 
 ```elixir
-{:ok, %ElixirExec.Handle{controller: pid}} =
+{:ok, %ElixirExec.Stream{controller: pid}} =
   ElixirExec.run("sleep 10", monitor: true)
 
 :ok = ElixirExec.stop(pid)

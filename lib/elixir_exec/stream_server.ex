@@ -1,31 +1,32 @@
 defmodule ElixirExec.StreamServer do
   @moduledoc """
-  Internal — receives a program's output messages and serves them to
-  whoever is iterating, one element at a time.
+  Internal — receives a program's output messages and hands them to
+  the consumer, one element at a time.
 
-  When you ask `ElixirExec` to stream a program's output, the library
-  starts one of these and tells the underlying Erlang library
-  (`:erlexec`) to send the program's output here. This module saves
-  what arrives into a small buffer (see `ElixirExec.StreamServer.Buffer`) and
-  hands the elements out as the consumer asks for them. If the
-  consumer asks while the buffer is empty, the call waits until either
-  more output arrives or the program exits.
+  When `ElixirExec` streams a program's output, it starts one of these
+  workers and tells the underlying runner to deliver output here. The
+  worker stores what arrives in a small buffer (see
+  `ElixirExec.StreamServer.Buffer`) and hands elements out as the
+  consumer asks for them. If the consumer asks while the buffer is
+  empty, the call waits until more output arrives or the program
+  exits.
 
   ## How a stream ends
 
   Call `attach/2` once with the controller pid of the running program.
-  This module watches that pid for exit using `Process.monitor/1`, and
-  it installs the watch *before* `attach/2` returns — so there's no
-  window where the program could exit before being watched. When the
-  program does exit, the worker emits any output still in the buffer
-  and then shuts down. The next iteration step sees the worker is
-  gone and ends the iteration cleanly.
+  The worker calls `Process.monitor/1` on that pid *before* `attach/2`
+  returns — so there is no window where the program could exit
+  unobserved. When the program exits, the worker emits any output
+  still in the buffer and then shuts down. The next iteration step
+  sees the worker is gone and ends the iteration cleanly.
 
-  ## Functions you'll use
+  ## Functions
 
     * `start_link/1` — start a fresh worker in one of the four modes.
-    * `attach/2` — wire it up to the controller pid. Synchronous: by
-      the time it returns, the watch is in place.
+
+    * `attach/2` — wire the worker up to the controller pid.
+
+      Synchronous: by the time it returns, the monitor is in place.
     * `stop/1` — shut the worker down by hand.
 
   ## The four modes
@@ -38,9 +39,12 @@ defmodule ElixirExec.StreamServer do
       is held back until either more stdout arrives or the program
       exits — on exit, a non-empty tail is emitted as the final
       element (without a trailing delim).
+
     * `:chunks` — read stdout, emitting each chunk exactly as it
       arrived from the program.
+
     * `:stderr` — like `:chunks` but for stderr.
+
     * `:merged` — read both stdout and stderr, tagged as
       `{:stdout, data}` or `{:stderr, data}` so you can tell them
       apart.
@@ -64,9 +68,11 @@ defmodule ElixirExec.StreamServer do
   Three call shapes are supported:
 
     * `start_link(mode)` — start with default options.
+
     * `start_link(mode, opts)` — pass options. In `:lines` mode, `:delim`
       (a non-empty binary, default `"\\n"`) controls how stdout is split
       into lines.
+
     * `start_link({mode, opts})` — tuple form for use with the default
       `child_spec/1` (e.g. `Supervisor.child_spec({__MODULE__, {mode,
       opts}}, ...)`).
@@ -83,7 +89,7 @@ defmodule ElixirExec.StreamServer do
   @spec start_link(mode(), keyword()) :: {:ok, pid(), Enumerable.t()}
   def start_link(mode, opts) when mode in [:lines, :chunks, :stderr, :merged] and is_list(opts) do
     {:ok, pid} = GenServer.start_link(__MODULE__, {mode, opts})
-    enum = Stream.unfold(pid, &next_element/1)
+    enum = Stream.unfold(pid, &next_element(&1, opts))
     {:ok, pid, enum}
   end
 
@@ -94,10 +100,13 @@ defmodule ElixirExec.StreamServer do
   This eliminates the race in which the port pid could exit between the
   attach request and the monitor installation: by the time `attach/2`
   returns `:ok`, the monitor is in place.
+
+  `opts[:timeout]` overrides the default `GenServer.call/3` timeout of
+  `5_000` ms.
   """
-  @spec attach(pid(), pid()) :: :ok
-  def attach(server, port_pid) when is_pid(server) and is_pid(port_pid) do
-    GenServer.call(server, {:attach, port_pid})
+  @spec attach(pid(), pid(), keyword()) :: :ok
+  def attach(server, port_pid, opts \\ []) when is_pid(server) and is_pid(port_pid) do
+    GenServer.call(server, {:attach, port_pid}, opts[:timeout] || 5_000)
   end
 
   @doc """
@@ -115,12 +124,24 @@ defmodule ElixirExec.StreamServer do
   # Stream.unfold/2 step
   # ---------------------------------------------------------------------------
 
-  # The only consumer-side primitive. Catches the three benign exit reasons
-  # that occur when the server has already shut down between elements,
-  # letting `Enum` cleanly produce `[]` rather than raising.
-  @spec next_element(pid()) :: {Buffer.element(), pid()} | nil
-  defp next_element(server) do
-    case GenServer.call(server, :next, :infinity) do
+  @doc """
+  Pull the next element from `server` for use as a `Stream.unfold/2` step.
+
+  Returns `{element, server}` while elements remain and `nil` once the
+  server reports `:end_of_stream` — the shape `Stream.unfold/2` expects.
+
+  `opts[:timeout]` overrides the default `GenServer.call/3` timeout of
+  `:infinity`. A streaming consumer typically wants to wait indefinitely
+  for the next element, so the default is `:infinity` rather than
+  `5_000` ms.
+
+  Catches the three exit reasons (`:noproc`, `:normal`, `:shutdown`)
+  that mean the server has already shut down between elements, so the
+  consumer sees a clean end of enumeration instead of a crash.
+  """
+  @spec next_element(pid(), keyword()) :: {Buffer.element(), pid()} | nil
+  def next_element(server, opts \\ []) do
+    case GenServer.call(server, :next, opts[:timeout] || :infinity) do
       :end_of_stream -> nil
       element -> {element, server}
     end

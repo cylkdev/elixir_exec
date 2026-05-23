@@ -102,7 +102,7 @@ def function(...), do: ...
 
 ## Project structure conventions
 
-- Public API lives in `lib/elixir_exec.ex` only. Other modules are internal unless their structs appear in return types (`Handle`, `Output`).
+- Public API lives in `lib/elixir_exec.ex` only. Other modules are internal unless their structs appear in return types (`Stream`, `Output`).
 - Internal modules go in `lib/elixir_exec/`. Sub-namespaces (e.g. the `Stream.Buffer` data type) go in `lib/elixir_exec/stream/`.
 - Test files mirror `lib/` exactly: `lib/elixir_exec/runner.ex` ↔ `test/elixir_exec/runner_test.exs`.
 - The top-level public-API test file is `test/elixir_exec_test.exs` and uses `doctest ElixirExec`.
