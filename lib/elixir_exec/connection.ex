@@ -163,9 +163,9 @@ defmodule ElixirExec.Connection do
   defp cancel_read_timer(timer), do: Process.cancel_timer(timer)
 
   defp exec_run_options(opts) do
-    stdin? = (opts[:stdin] || true) === true
-    stdout? = (opts[:stdout] || true) === true
-    stderr? = (opts[:stderr] || true) === true
+    stdin? = Keyword.get(opts, :stdin, true)
+    stdout? = Keyword.get(opts, :stdout, true)
+    stderr? = Keyword.get(opts, :stderr, true)
 
     proplist = [:link]
     proplist = if stdin?, do: [:stdin | proplist], else: proplist

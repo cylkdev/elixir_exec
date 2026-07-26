@@ -50,6 +50,24 @@ defmodule ElixirExecTest do
       assert ElixirExec.read(conn) === {:ok, {:exit, 0}}
     end
 
+    test "stdin: false leaves the program without stdin, so it sees EOF at once" do
+      {:ok, conn} = ElixirExec.run("cat", stdin: false)
+
+      assert ElixirExec.read(conn) === {:ok, {:exit, 0}}
+    end
+
+    test "stdout: false delivers no stdout, only the exit" do
+      {:ok, conn} = ElixirExec.run("echo hi", stdout: false)
+
+      assert ElixirExec.read(conn) === {:ok, {:exit, 0}}
+    end
+
+    test "stderr: false delivers no stderr, only the exit" do
+      {:ok, conn} = ElixirExec.run("echo hi 1>&2", stderr: false)
+
+      assert ElixirExec.read(conn) === {:ok, {:exit, 0}}
+    end
+
     test "list form resolves a bare name through PATH" do
       {:ok, conn} = ElixirExec.run(["echo", "hi"])
 

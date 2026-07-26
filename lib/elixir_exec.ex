@@ -4,7 +4,7 @@ defmodule ElixirExec do
 
   Start a program, read from it, write to it, stop it:
 
-      {:ok, conn} = ElixirExec.run("cat", stdin: true)
+      {:ok, conn} = ElixirExec.run("cat")
 
       ElixirExec.write(conn, "hello\\n")
       {:ok, {:stdout, "hello\\n"}} = ElixirExec.read(conn)
@@ -33,8 +33,14 @@ defmodule ElixirExec do
   @typedoc """
   Options for the command, as a keyword list.
 
-  `timeout: ms` is read by `capture/2`. Everything else is passed to the
-  runner unchanged.
+  `timeout: ms` is read by `capture/2` and `owner: pid` by `run/2`. Of the
+  rest, these are forwarded to `:exec.run/2` unchanged: `:executable`, `:cd`,
+  `:env`, `:kill`, `:kill_timeout`, `:group`, `:user`, `:nice`,
+  `:success_exit_code`, `:winsz`, `:pty`, `:capabilities` and `:debug`. Any
+  other key is ignored.
+
+  `stdin: false`, `stdout: false` and `stderr: false` disconnect that stream
+  from the program. All three default to `true`.
   """
   @type options :: keyword()
 
@@ -54,13 +60,16 @@ defmodule ElixirExec do
   `run(["echo", "hi"])` works the same as `run("echo hi")`. A name that
   contains `/` is used exactly as given.
 
-  Pass `stdin: true` if you intend to `write/2` to it.
+  stdin, stdout and stderr are connected by default, so you can `write/2` to
+  it and `read/2` from it without asking for anything. Pass `stdin: false`,
+  `stdout: false` or `stderr: false` to leave one out.
 
   ## Lifetime
 
   The program is stopped if the process that started it dies — including a
-  brutal kill. That is enforced by a monitor, not a link, so the reverse is
-  not true: a program failing or exiting non-zero never disturbs you.
+  brutal kill. Pass `owner: pid` to tie it to some process other than the
+  caller. The owner is held by a monitor, not a link, so the reverse is not
+  true: a program failing or exiting non-zero never disturbs you.
 
       spawn(fn -> {:ok, _} = ElixirExec.run("sleep 3600") end)
       # that process exits immediately, and `sleep 3600` is killed with it.
@@ -92,8 +101,9 @@ defmodule ElixirExec do
   @doc """
   Writes to the program's standard input, or closes it with `:eof`.
 
-  The program must have been started with `stdin: true`; without it the write
-  is accepted and the data goes nowhere.
+  stdin is connected unless the program was started with `stdin: false`;
+  without it the write is accepted and the data goes nowhere. A program that
+  has already exited returns `{:error, reason}`.
   """
   @spec write(conn(), iodata() | :eof) :: :ok | {:error, term()}
   def write(conn, data), do: Connection.write(conn, data)

@@ -40,10 +40,10 @@ defmodule ElixirExec.MixProject do
   end
 
   def application do
-    # `mod:` exists only to supervise ElixirExec.Guardian, which enforces
-    # "an OS process must not outlive its owner" and has to be a singleton.
-    # `:erlexec` remains an ordinary started dependency that supervises its
-    # own `exec` gen_server -- we do not start, configure or wrap it.
+    # `mod:` exists only to supervise ElixirExec.ConnectionSupervisor, which
+    # owns one connection process per running program. `:erlexec` remains an
+    # ordinary started dependency that supervises its own `exec` gen_server --
+    # we do not start, configure or wrap it.
     [
       extra_applications: [:logger],
       mod: {ElixirExec.Application, []}
