@@ -1,0 +1,203 @@
+defmodule ElixirExec.Connection do
+  @moduledoc false
+
+  # One process per running program.
+  #
+  # It calls :exec.run, so the program's output is delivered here -- a bare
+  # :stdout means "whoever made the call" (exec.erl:337). Output is held in a
+  # queue until read/2 asks for it, so nothing ever reaches the caller's
+  # mailbox.
+  #
+  # It monitors the owner and stops the program if the owner dies. erlexec does
+  # not do this: under `link` it links whoever called :exec.run (exec.erl:1204),
+  # which is this process, not the owner.
+  #
+  # That link is the reason `link` is used here rather than `monitor`. erlexec
+  # kills an OS process when its controller dies (exec.erl:1327), and the
+  # controller dies with whatever it is linked to -- so linking it here means
+  # the program is reaped however this process goes, including a brutal kill or
+  # the supervision tree going down, neither of which leaves us any code to run.
+  # Under `monitor` the controller outlives us and the OS process is orphaned.
+  #
+  # The link is bidirectional, and a non-zero exit does exit the controller
+  # abnormally (exec.erl:1223), so this process traps exits. The program's exit
+  # then arrives as a message like any other. None of this reaches the owner,
+  # which is held by a monitor and never a link.
+
+  use GenServer
+
+  # `owner` is whoever the program belongs to. It defaults to the calling
+  # process, so starting one directly needs nothing extra; going through the
+  # supervisor does, because start_link then runs in the supervisor.
+  def start_link(command, owner, opts \\ []) do
+    GenServer.start_link(__MODULE__, {command, owner, opts})
+  end
+
+  def child_spec({command, owner, opts}) do
+    %{
+      id: {__MODULE__, opts[:id] || System.unique_integer([:monotonic, :positive])},
+      start: {__MODULE__, :start_link, [command, owner, opts]},
+      restart: :transient
+    }
+  end
+
+  def child_spec(opts) do
+    {command, opts} = Keyword.pop!(opts, :command)
+    {owner, opts} = Keyword.pop!(opts, :owner)
+    child_spec({command, owner, opts})
+  end
+
+  # :infinity on the call itself: the timeout is the worker's to enforce, so a
+  # slow program never exits the caller and never leaves a late reply behind.
+  def read(conn, timeout), do: GenServer.call(conn, {:read, timeout}, :infinity)
+
+  def write(conn, data), do: GenServer.call(conn, {:write, data})
+
+  def stop(conn), do: GenServer.call(conn, :stop)
+
+  def kill(conn, signal), do: GenServer.call(conn, {:kill, signal})
+
+  # The owner monitor is never demonitored: this process stops on that DOWN,
+  # and monitors are released when the process holding them dies.
+  #
+  # Trapping exits is what makes the controller's link (see above) survivable:
+  # the program's exit arrives as {:EXIT, controller, reason} instead of killing
+  # us. It is set before :exec.run so a program that exits immediately cannot
+  # land in the window before it.
+  @impl GenServer
+  def init({command, owner, opts}) do
+    Process.flag(:trap_exit, true)
+
+    case :exec.run(command, exec_run_options(opts)) do
+      {:ok, _controller, os_pid} ->
+        {:ok,
+         %{
+           os_pid: os_pid,
+           owner_ref: Process.monitor(owner),
+           events: :queue.new(),
+           reader: nil
+         }}
+
+      {:error, reason} ->
+        {:stop, reason}
+    end
+  end
+
+  @impl GenServer
+  # The exit is the last thing there is to read, so the process ends with it.
+  def handle_call({:read, timeout}, from, state) do
+    case :queue.out(state.events) do
+      {{:value, {:exit, _} = event}, events} ->
+        {:stop, :normal, {:ok, event}, %{state | events: events}}
+
+      {{:value, event}, events} ->
+        {:reply, {:ok, event}, %{state | events: events}}
+
+      {:empty, _events} ->
+        {:noreply, %{state | reader: {from, read_timer(timeout)}}}
+    end
+  end
+
+  def handle_call({:write, :eof}, _from, state) do
+    {:reply, :exec.send(state.os_pid, :eof), state}
+  end
+
+  def handle_call({:write, data}, _from, state) do
+    {:reply, :exec.send(state.os_pid, IO.iodata_to_binary(data)), state}
+  end
+
+  # stop sends SIGTERM and escalates to SIGKILL; kill sends one signal now.
+  def handle_call(:stop, _from, state), do: {:reply, :exec.stop(state.os_pid), state}
+
+  def handle_call({:kill, signal}, _from, state) do
+    {:reply, :exec.kill(state.os_pid, signal), state}
+  end
+
+  @impl GenServer
+  def handle_info({stream, _os_pid, data}, state) when stream in [:stdout, :stderr] do
+    record(state, {stream, data})
+  end
+
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, %{owner_ref: ref} = state) do
+    # The owner is gone, so this process goes too, and the controller's link
+    # takes the program with it (see above). We do not stop the program here:
+    # that would be a second stop racing erlexec's own link teardown, and when
+    # the program has already exited the teardown's stop lands on a dead os_pid
+    # with no caller to answer -- which erlexec logs as an unknown message.
+    {:stop, :normal, state}
+  end
+
+  # The controller is the only process this one is linked to, and gen_server
+  # handles its parent's exit itself, so any EXIT reaching here is the program
+  # ending. Its reason carries the exit status (exec.erl:1219-1226).
+  def handle_info({:EXIT, _controller, reason}, state) do
+    record(state, {:exit, exit_status(reason)})
+  end
+
+  def handle_info(:read_timeout, %{reader: {from, _timer}} = state) do
+    GenServer.reply(from, {:error, :timeout})
+    {:noreply, %{state | reader: nil}}
+  end
+
+  # Hands an event to a waiting reader, or queues it until one asks.
+  defp record(%{reader: nil} = state, event) do
+    {:noreply, %{state | events: :queue.in(event, state.events)}}
+  end
+
+  defp record(%{reader: {from, timer}} = state, {:exit, _} = event) do
+    cancel_read_timer(timer)
+    GenServer.reply(from, {:ok, event})
+    {:stop, :normal, %{state | reader: nil}}
+  end
+
+  defp record(%{reader: {from, timer}} = state, event) do
+    cancel_read_timer(timer)
+    GenServer.reply(from, {:ok, event})
+    {:noreply, %{state | reader: nil}}
+  end
+
+  defp read_timer(:infinity), do: nil
+  defp read_timer(timeout), do: Process.send_after(self(), :read_timeout, timeout)
+
+  defp cancel_read_timer(nil), do: :ok
+  defp cancel_read_timer(timer), do: Process.cancel_timer(timer)
+
+  defp exec_run_options(opts) do
+    stdin? = (opts[:stdin] || true) === true
+    stdout? = (opts[:stdout] || true) === true
+    stderr? = (opts[:stderr] || true) === true
+
+    proplist = [:link]
+    proplist = if stdin?, do: [:stdin | proplist], else: proplist
+    proplist = if stdout?, do: [:stdout | proplist], else: proplist
+    proplist = if stderr?, do: [:stderr | proplist], else: proplist
+
+    run_opts =
+      Keyword.take(opts, [
+        :executable,
+        :cd,
+        :env,
+        :kill,
+        :kill_timeout,
+        :group,
+        :user,
+        :nice,
+        :success_exit_code,
+        :winsz,
+        :pty,
+        :capabilities,
+        :debug
+      ])
+
+    proplist ++ run_opts
+  end
+
+  defp exit_status(status) do
+    case status do
+      :normal -> 0
+      {:exit_status, raw} when Bitwise.band(raw, 0xFF) === 0 -> Bitwise.bsr(raw, 8)
+      {:exit_status, raw} -> {:signal, :exec.signal(Bitwise.band(raw, 0x7F))}
+      other -> other
+    end
+  end
+end

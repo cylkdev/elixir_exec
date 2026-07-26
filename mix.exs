@@ -40,6 +40,10 @@ defmodule ElixirExec.MixProject do
   end
 
   def application do
+    # `mod:` exists only to supervise ElixirExec.Guardian, which enforces
+    # "an OS process must not outlive its owner" and has to be a singleton.
+    # `:erlexec` remains an ordinary started dependency that supervises its
+    # own `exec` gen_server -- we do not start, configure or wrap it.
     [
       extra_applications: [:logger],
       mod: {ElixirExec.Application, []}
@@ -49,7 +53,6 @@ defmodule ElixirExec.MixProject do
   defp deps do
     [
       {:erlexec, "~> 2.3"},
-      {:nimble_options, "~> 1.1"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:blitz_credo_checks, "~> 0.1.5", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
@@ -64,7 +67,7 @@ defmodule ElixirExec.MixProject do
 
   defp package do
     [
-      files: ~w(lib mix.exs README.md LICENSE .formatter.exs),
+      files: ~w(lib priv mix.exs README.md LICENSE .formatter.exs),
       licenses: ["Apache-2.0"],
       links: %{"GitHub" => @source_url}
     ]
