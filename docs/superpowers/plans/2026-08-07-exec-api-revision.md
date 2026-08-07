@@ -1382,7 +1382,18 @@ Third-person indicative throughout. Sections in `System`'s order. Rationale move
 
 **Files:**
 - Modify: `lib/exec.ex` (`@moduledoc`, every `@doc`, both `@typedoc`s)
+- Modify: `lib/mix/tasks/elixir_exec.setup_user.ex` (one dangling doc reference — see Step 0)
 - Test: `test/exec_test.exs` (doctests run from `doctest Exec`)
+
+- [ ] **Step 0: Fix the dangling reference in the Mix task's documentation**
+
+`lib/mix/tasks/elixir_exec.setup_user.ex:14` contains a documentation example calling `ElixirExec.capture("whoami", user: "elixir_exec")`. Both halves are now wrong: the module is `Exec` and the function is `run/2`. Change it to:
+
+```elixir
+      Exec.run("whoami", user: "elixir_exec")
+```
+
+The module's own name, `Mix.Tasks.ElixirExec.SetupUser` on line 1, is deliberately unchanged — it derives from the Mix task name `mix elixir_exec.setup_user`, which is package-scoped and stays. Change only the example.
 
 **Interfaces:**
 - Consumes: the final API from Tasks 1–7.
