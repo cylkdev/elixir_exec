@@ -277,10 +277,95 @@ the README warning about its absence.
   executable exits non-zero with a stderr diagnostic rather than returning an error.
 - Doctests wired into the test run.
 
+## Part 4 — Testing methodology
+
+### Docker is the only test environment
+
+The suite starts real operating system programs, so it depends on those programs
+existing. Today that dependency is ambient: it is satisfied by whatever happens to be
+installed on the developer's machine, and nothing records what the suite actually
+needs.
+
+`docker/Dockerfile` builds an image containing the project and every program its tests
+require, and the suite runs inside that image. The requirement that it run on a machine
+with nothing installed is the point: it forces each dependency to be declared rather
+than assumed, and it makes the setup happen from the outside in — build the image with
+the programs, then write the tests, then run them in the container.
+
+### Tests are written one way
+
+No tags. No `async: false`. No environment checks, no skip conditions, no helper that
+behaves differently inside the container. Every test is written from the caller's point
+of view, using the public API the way a user of the library would.
+
+A test does not know or care where it runs. The image is what makes it able to run.
+
+### The image
+
+- Base: `hexpm/elixir:1.18.4-erlang-27.3.4-debian-bookworm-20250428-slim`. Debian
+  rather than Alpine because erlexec compiles a C++ port binary and glibc is the safer
+  target.
+- Installs `build-essential` (erlexec's `exec-port` is compiled from source) and
+  `procps` (tests use `pgrep` to observe OS processes directly).
+- Creates an unprivileged user `app` and runs the suite as it. erlexec refuses to spawn
+  children while running as root, so a root container would fail every test. This also
+  matches how the library is deployed.
+- Pins `SHELL=/bin/sh`. erlexec dispatches string commands through `$SHELL`, so leaving
+  it inherited means the suite silently tests zsh on a Mac and bash on a server. On
+  Debian `/bin/sh` is dash.
+- Layer order: `mix.exs` and `mix.lock` are copied and dependencies compiled before
+  `lib/` and `test/` are copied, so editing a test does not rebuild erlexec.
+- `.dockerignore` at the repository root excludes `deps/` and `_build/`; those hold
+  macOS-compiled artifacts that cannot run on Linux.
+
+`docker/test` builds the image and runs a command in it, defaulting to `mix test`. It
+is the only supported way to run the suite. `mix test` on a Mac will not pass once the
+fixture below is in use, and the README says so.
+
+### Fixtures
+
+`docker/fixtures/ignores-sigterm` is a shell script that traps and discards `SIGTERM`,
+then loops. It exists because `stop/1` documents an escalation to `SIGKILL` that no
+current test proves: every program the suite starts exits on `SIGTERM` willingly. Tests
+refer to it by its container path, `/usr/local/fixtures/ignores-sigterm`.
+
+### Capabilities the image adds coverage for
+
+All four are documented behaviour with no current test:
+
+1. **`SIGTERM` escalation** — `stop/1` really does escalate, and `kill_timeout:`
+   changes how long that takes.
+2. **Large and chunked output** — `Result.stdout` joins chunks correctly, and
+   `stream!/2` reassembles a line spanning a chunk boundary. The partial-line buffer in
+   `split_complete_lines/1` is currently unexercised.
+3. **Output that is not text** — raw bytes are returned and split as bytes, rather than
+   assumed to be valid UTF-8.
+4. **`cd:` and `env:`** — forwarded options, never exercised end to end.
+
+`pty:` and `winsz:` are deliberately out of scope; they need a tty-aware fixture.
+
+### Facts to establish by running, not reasoning
+
+These are written into the plan as assumptions to be replaced with observed values:
+
+1. The `exit_status` erlexec reports after an escalated `SIGKILL`. A cooperative `stop/1`
+   currently reports `0`.
+2. **Whether `stop/1` survives escalation at all.** `:exec.stop/1` blocks until the
+   program dies, and `Exec.Program.stop/1` calls it through a `GenServer.call` with the
+   default 5-second timeout — the same value as erlexec's default `kill_timeout`. If
+   that races, `stop/1` exits the caller instead of returning `:ok`. This is a
+   suspected live bug; the escalation test is scheduled early specifically to surface
+   it before the renaming work is stacked on top.
+3. Whether dash's `printf` accepts `\377` octal escapes (`\xff` is not POSIX).
+4. The shape erlexec expects for `env:` — `[{"FOO", "bar"}]` or charlists.
+
 ## Success criteria
 
-- `mix test`, `mix credo --strict`, and `mix dialyzer` pass.
+- `docker/test`, `docker/test mix credo --strict` and `docker/test mix dialyzer` pass.
+- The image builds on a machine with only Docker installed.
+- No test is tagged, skipped, or conditional on its environment.
 - No `@doc` or `@moduledoc` contains second-person address.
 - No public function returns an erlexec-shaped value that is not documented in the
   library's own terms.
 - Every documented error reason is covered by a test.
+- Each of the four facts above is replaced by an observed value, not a guess.

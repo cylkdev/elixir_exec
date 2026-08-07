@@ -10,11 +10,14 @@
 
 ## Global Constraints
 
-- Spec: `docs/superpowers/specs/2026-08-07-exec-api-revision-design.md`. Read it before Task 1.
+- Spec: `docs/superpowers/specs/2026-08-07-exec-api-revision-design.md`. Read it before Task 0.
+- **Docker is the only test environment.** After Task 0, every test command in this plan runs through `docker/test`. Do not run `mix test` on the host; it is not a supported configuration and will fail once the fixture in Task 0 is in use.
+- **Tests are written one way.** No `@tag`, no `async: false`, no environment checks, no skip conditions, no helper that behaves differently in the container. Every test is written from the caller's point of view, using the public API as a user of the library would. A test must not know where it runs.
+- Anything a test needs must be **declared in `docker/Dockerfile`**, never assumed to be present. Adding a test that needs a program means adding that program to the image first.
+- `docker/test mix format --check-formatted` must pass. Formatting is only *checked* in the container, because a container edits nothing on the host — write formatted code, or run `mix format` on the host if Elixir is installed there.
+- `docker/test mix credo --strict` and `docker/test mix dialyzer` must pass at the end of every task.
 - The OTP application name and Hex package name stay `:elixir_exec`. Only Elixir module names change.
 - The Mix task stays `mix elixir_exec.setup_user` (module `Mix.Tasks.ElixirExec.SetupUser`). Do not rename it.
-- `mix format` must pass. Run `mix format` before every commit.
-- `mix credo --strict` and `mix dialyzer` must pass at the end of every task.
 - No `@doc` or `@moduledoc` may address the reader in the second person ("you", "your", "yours").
 - Elixir uses `===` for strict equality in this codebase's tests. Match the existing style.
 - Doctests are already enabled via `doctest ElixirExec` in the test file; it becomes `doctest Exec`.
@@ -34,8 +37,174 @@
 | `lib/mix/tasks/elixir_exec.setup_user.ex` | unchanged path | Deploy-host tooling |
 | `test/elixir_exec_test.exs` | → `test/exec_test.exs` | Whole-library test suite |
 | `mix.exs` | modify | `mod:`, `docs: main:` |
+| `docker/Dockerfile` | create | Builds the Linux image the suite runs in — Task 0 |
+| `docker/fixtures/ignores-sigterm` | create | A program that traps and discards `SIGTERM` — Task 0 |
+| `docker/test` | create | Builds the image and runs a command in it, defaulting to `mix test` — Task 0 |
+| `.dockerignore` | create | Keeps macOS `deps/` and `_build/` out of the image — Task 0 |
 | `README.md` | rewrite | Task 9 |
 | `LICENSE` | create | Task 9 |
+
+---
+
+### Task 0: Build the test environment
+
+The suite starts real operating system programs, so it depends on those programs existing. Today that dependency is ambient — satisfied by whatever happens to be installed on the developer's machine, recorded nowhere. This task makes it explicit and moves the suite inside a container.
+
+This task comes first so that a failure in it is a Dockerfile problem and never a refactoring problem. Its deliverable is **the existing suite, unchanged, passing inside the container**.
+
+**Files:**
+- Create: `docker/Dockerfile`
+- Create: `docker/fixtures/ignores-sigterm`
+- Create: `docker/test`
+- Create: `.dockerignore` (repository root — Docker reads it only from the build context root, so it cannot live in `docker/`)
+- Test: `test/elixir_exec_test.exs` (one test added; the file is renamed in Task 1)
+
+**Interfaces:**
+- Consumes: nothing.
+- Produces: `docker/test`, the command every later task uses to run tests. `/usr/local/fixtures/ignores-sigterm` inside the image, a program that ignores `SIGTERM`.
+
+- [ ] **Step 1: Write `docker/Dockerfile`**
+
+Use the file agreed in the design session. Every instruction is commented for a reader who does not already know Docker, and every path is named literally. Base image `hexpm/elixir:1.18.4-erlang-27.3.4-debian-bookworm-20250428-slim`; installs `build-essential` and `procps`; creates and switches to an unprivileged user `app`; sets `ENV SHELL=/bin/sh` and `ENV MIX_ENV=test`; copies `mix.exs` and `mix.lock` and compiles dependencies *before* copying `lib` and `test`; copies `docker/fixtures` to `/usr/local/fixtures`; ends with `CMD ["mix", "test"]`.
+
+- [ ] **Step 2: Write `docker/fixtures/ignores-sigterm` and make it executable**
+
+```sh
+#!/bin/sh
+#
+# A program that refuses to shut down politely.
+#
+# ElixirExec.stop/1 claims to send SIGTERM first and then, if the program is
+# still running about five seconds later, SIGKILL. Nothing in the test suite
+# proves the second half of that, because every program the other tests start --
+# `cat`, `sleep`, `echo` -- exits as soon as it is sent SIGTERM.
+#
+# This script does not. `trap '' TERM` tells the shell to ignore SIGTERM
+# entirely: the signal arrives and nothing happens. SIGKILL cannot be ignored by
+# any program, so the only thing that can end this script is the escalation.
+#
+# It prints "ready" first so that a test can wait for that line and know the
+# program is running before trying to stop it, rather than guessing with a
+# sleep.
+#
+# The loop then does nothing forever, one tenth of a second at a time.
+#
+# The tests refer to this file by its path inside the container,
+# /usr/local/fixtures/ignores-sigterm. It is copied there by docker/Dockerfile.
+
+trap '' TERM
+
+echo ready
+
+while :; do
+  sleep 0.1
+done
+```
+
+```bash
+chmod +x docker/fixtures/ignores-sigterm
+```
+
+- [ ] **Step 3: Write `.dockerignore` in the repository root**
+
+```
+# Folders Docker must not copy into the image, listed here because Docker only
+# reads this file from the build context root.
+#
+# deps and _build hold dependencies compiled for macOS. The image runs Linux, so
+# those files cannot execute in it, and docker/Dockerfile builds its own copies
+# inside the image instead.
+deps
+_build
+
+# Build products of `mix docs` and `mix dialyzer`, and the editor's index. None
+# is needed to run the tests.
+doc
+dialyzer
+.elixir_ls
+
+# Version control history. Large, and nothing in the image reads it.
+.git
+```
+
+- [ ] **Step 4: Write `docker/test` and make it executable**
+
+```sh
+#!/bin/sh
+# Builds the test image from docker/Dockerfile and runs a command inside it.
+#
+# With no arguments it runs the test suite, because docker/Dockerfile ends with
+# CMD ["mix", "test"]. Any arguments given are run instead:
+#
+#     docker/test                          # mix test
+#     docker/test mix test test/exec_test.exs:42
+#     docker/test mix credo --strict
+#     docker/test mix format --check-formatted
+#
+# The build is fast after the first run: Docker reuses its stored results for
+# every instruction whose inputs are unchanged, and editing lib/ or test/ only
+# invalidates the two COPY instructions at the end of docker/Dockerfile.
+set -e
+docker build -f docker/Dockerfile -t elixir_exec_test .
+docker run --rm elixir_exec_test "$@"
+```
+
+```bash
+chmod +x docker/test
+```
+
+- [ ] **Step 5: Run the existing suite in the container**
+
+Run: `docker/test`
+Expected: PASS, with the same test count as `mix test` produces on the host today. This is the real test of the image — a green run proves it contains everything the suite needs.
+
+If tests fail here, the cause is the image, not the library. The likely candidates, in order: `pgrep` missing (`procps` not installed), the erlexec port failing to compile (`build-essential` not installed), or a test relying on a zsh behaviour that dash does not share.
+
+- [ ] **Step 6: Add the escalation test**
+
+This test goes in now, against the current API, rather than waiting for Task 10 with the other new tests. It is scheduled early because it may expose a live bug, and finding that before seven tasks of renaming are stacked on top is worth writing it twice.
+
+The suspected bug: `:exec.stop/1` blocks until the program actually dies, and `ElixirExec.Connection.stop/1` calls it through a `GenServer.call` with the default 5-second timeout — the same number as erlexec's default `kill_timeout`. If those race, `stop/1` exits the caller instead of returning `:ok`.
+
+Add to `test/elixir_exec_test.exs`, inside `describe "stop/1 and kill/2"`:
+
+```elixir
+    test "stop/1 ends a program that ignores SIGTERM" do
+      {:ok, conn} = ElixirExec.run("/usr/local/fixtures/ignores-sigterm", kill_timeout: 1)
+
+      assert ElixirExec.read(conn) === {:ok, {:stdout, "ready\n"}}
+      assert ElixirExec.stop(conn) === :ok
+      assert {:ok, {:exit, _status}} = ElixirExec.read(conn)
+    end
+```
+
+- [ ] **Step 7: Run it and record what actually happens**
+
+Run: `docker/test mix test test/elixir_exec_test.exs`
+
+Three outcomes, each with a different next move:
+
+1. **It passes.** Replace `_status` with the literal value observed, so the test pins the behaviour rather than accepting anything. Get the value by running `docker/test mix test test/elixir_exec_test.exs --trace` with a deliberately wrong expected value, and read it out of the failure message.
+2. **`stop/1` exits with a `GenServer.call` timeout.** The suspected bug is real. Stop here, record the exact failure in this plan, and raise it — it needs its own task with a fix (pass a timeout derived from `kill_timeout`, or make `stop/1` asynchronous), and that task belongs before the renaming work.
+3. **The program is never killed and the test hangs.** `kill_timeout: 1` is not being forwarded. Check `exec_run_options/1` in `lib/elixir_exec/connection.ex` — `:kill_timeout` is in its `Keyword.take/2` list, so this would mean erlexec ignores it rather than that the library drops it.
+
+- [ ] **Step 8: Commit**
+
+```bash
+docker/test mix format --check-formatted
+docker/test mix credo --strict
+git add docker .dockerignore test/elixir_exec_test.exs
+git commit -m "test: run the suite in a container that declares what it needs
+
+The suite starts real OS programs, and which programs were available was
+previously whatever the developer's machine happened to have. docker/Dockerfile
+declares them instead, and docker/test runs the suite inside it.
+
+Adds a fixture that ignores SIGTERM, so stop/1's documented escalation to
+SIGKILL is covered for the first time.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+```
 
 ---
 
@@ -169,7 +338,9 @@ Expected: matches only in `lib/mix/tasks/elixir_exec.setup_user.ex` (the task mo
 - [ ] **Step 6: Compile and run the suite**
 
 ```bash
-mix format && mix compile --warnings-as-errors && mix test
+docker/test mix format --check-formatted
+docker/test mix compile --warnings-as-errors
+docker/test
 ```
 
 Expected: PASS. This task changes no behaviour, so every existing test must still pass unmodified apart from its module references.
@@ -214,7 +385,7 @@ In `test/exec_test.exs`:
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `mix test`
+Run: `docker/test`
 Expected: FAIL with `function Exec.open/1 is undefined or private` and similar for `stream!/1` and `signal/2`.
 
 - [ ] **Step 3: Rename in `lib/exec.ex`**
@@ -284,7 +455,8 @@ Cross-references inside `@doc` strings that still say `capture/2`, `stream/2`, `
 - [ ] **Step 4: Run the tests to verify they pass**
 
 ```bash
-mix format && mix test
+docker/test mix format --check-formatted
+docker/test
 ```
 Expected: PASS.
 
@@ -298,7 +470,8 @@ Expected: no matches. (`Exec.Program.kill/2` is a private-module function and ke
 - [ ] **Step 6: Commit**
 
 ```bash
-mix credo --strict && mix dialyzer
+docker/test mix credo --strict
+docker/test mix dialyzer
 git add lib/exec.ex test/exec_test.exs
 git commit -m "refactor!: rename public functions to idiomatic names
 
@@ -345,7 +518,7 @@ In `test/exec_test.exs`, inside `describe "stream!/2"`, replace all three `{:exi
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `mix test test/exec_test.exs`
+Run: `docker/test mix test test/exec_test.exs`
 Expected: FAIL — the assertions get `{:exit_status, 0}` where they expect `{:exit, 0}`.
 
 - [ ] **Step 3: Change the one line that emits it**
@@ -359,13 +532,14 @@ In `lib/exec.ex`, inside `stream_next/1`:
 
 - [ ] **Step 4: Run to verify they pass**
 
-Run: `mix test`
+Run: `docker/test`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-mix format && mix credo --strict
+docker/test mix format --check-formatted
+docker/test mix credo --strict
 git add lib/exec.ex test/exec_test.exs
 git commit -m "fix!: emit {:exit, status} from stream!/2
 
@@ -415,7 +589,7 @@ Add a test proving chunks are joined rather than listed:
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `mix test test/exec_test.exs`
+Run: `docker/test mix test test/exec_test.exs`
 Expected: FAIL — `Exec.Result.__struct__/1 is undefined`.
 
 - [ ] **Step 3: Write `lib/exec/result.ex`**
@@ -485,13 +659,15 @@ Update `run/2`'s two `@spec`s from `Output.t()` to `Result.t()`.
 
 - [ ] **Step 5: Run to verify they pass**
 
-Run: `mix test`
+Run: `docker/test`
 Expected: PASS. The doctest in `run/2`'s `@doc` still shows `%ElixirExec.Output{stdout: ["hi\n"], ...}` and will fail — fix it now to `{:ok, %Exec.Result{stdout: "hi\n", stderr: "", exit_status: 0}}`.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-mix format && mix credo --strict && mix dialyzer
+docker/test mix format --check-formatted
+docker/test mix credo --strict
+docker/test mix dialyzer
 git add -A lib test
 git commit -m "refactor!: Exec.Output becomes Exec.Result with binary fields
 
@@ -554,7 +730,7 @@ And in `describe "run/2"`:
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `mix test test/exec_test.exs`
+Run: `docker/test mix test test/exec_test.exs`
 Expected: FAIL — no `ArgumentError` is raised; `Exec.open/2` succeeds.
 
 - [ ] **Step 3: Validate in `Exec.open/2`**
@@ -640,13 +816,15 @@ An invalid *value* is only detectable by erlexec, and it surfaces as a start fai
 
 - [ ] **Step 6: Run to verify they pass**
 
-Run: `mix test`
+Run: `docker/test`
 Expected: PASS.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-mix format && mix credo --strict && mix dialyzer
+docker/test mix format --check-formatted
+docker/test mix credo --strict
+docker/test mix dialyzer
 git add lib test
 git commit -m "feat!: raise ArgumentError on unknown or invalid options
 
@@ -711,7 +889,7 @@ And add a test pinning the finding that a missing executable is an exit, not an 
 
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `mix test test/exec_test.exs`
+Run: `docker/test mix test test/exec_test.exs`
 Expected: FAIL — the empty-command tests get `{:error, ~c"empty command provided"}`.
 
 - [ ] **Step 3: Normalize in `open/2`**
@@ -777,13 +955,15 @@ Update the `stream!/2` failure test:
 
 - [ ] **Step 5: Run to verify they pass**
 
-Run: `mix test`
+Run: `docker/test`
 Expected: PASS.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-mix format && mix credo --strict && mix dialyzer
+docker/test mix format --check-formatted
+docker/test mix credo --strict
+docker/test mix dialyzer
 git add -A lib test
 git commit -m "feat!: normalize start-failure reasons
 
@@ -887,7 +1067,9 @@ And its one call site in `handle_info({:EXIT, _controller, reason}, state)`:
 - [ ] **Step 3: Run the suite unchanged**
 
 ```bash
-mix format && mix compile --warnings-as-errors && mix test
+docker/test mix format --check-formatted
+docker/test mix compile --warnings-as-errors
+docker/test
 ```
 Expected: PASS, with `test/exec_test.exs` untouched by this task. If a test needed editing, revert and find what behaviour changed.
 
@@ -901,7 +1083,8 @@ Expected: no matches.
 - [ ] **Step 5: Commit**
 
 ```bash
-mix credo --strict && mix dialyzer
+docker/test mix credo --strict
+docker/test mix dialyzer
 git add lib
 git commit -m "refactor: name private functions for what they do
 
@@ -1240,7 +1423,8 @@ Expected: no matches.
 - [ ] **Step 8: Run the doctests**
 
 ```bash
-mix format && mix test
+docker/test mix format --check-formatted
+docker/test
 ```
 Expected: PASS, including the four new doctests (`run/2` twice, the moduledoc twice, `stream!/2` once).
 
@@ -1249,7 +1433,8 @@ If the `stream!/2` doctest fails on element formatting, note that Elixir's inspe
 - [ ] **Step 9: Commit**
 
 ```bash
-mix credo --strict && mix dialyzer
+docker/test mix credo --strict
+docker/test mix dialyzer
 git add lib
 git commit -m "docs: rewrite in stdlib voice, aimed at usage questions
 
@@ -1301,9 +1486,17 @@ limitations under the License.
 - [ ] **Step 2: Verify the package builds**
 
 ```bash
-mix hex.build
+docker/test mix hex.build
 ```
-Expected: succeeds and reports the file list including `LICENSE`. Delete the resulting `.tar` afterwards.
+Expected: succeeds and reports a file list that includes `LICENSE`. The `.tar` it writes needs no cleanup — it is written inside the container, which `docker/test` deletes on exit.
+
+Note that `docker/Dockerfile` copies `lib`, `test`, `mix.exs`, `mix.lock` and the three dotfile configs into the image, but not `README.md` or `LICENSE`. Add both to the Dockerfile in this step, since `mix.exs` lists them in `:files` and `mix hex.build` fails without them:
+
+```dockerfile
+# README.md and LICENSE are listed in the `files:` key of mix.exs, so
+# `mix hex.build` refuses to package the project unless both are present.
+COPY --chown=app:app README.md LICENSE ./
+```
 
 - [ ] **Step 3: Rewrite `README.md`**
 
@@ -1318,32 +1511,34 @@ Rules for the rewrite:
 - Keep the Installation, Configuration and non-root-user sections largely as they are; they are accurate. Update the `ElixirExec.capture("whoami", user: "elixir_exec")` example to `Exec.run("whoami", user: "elixir_exec")`.
 - Add to the Options section that an unrecognised option raises `ArgumentError` — the previous README stated the opposite ("neither filters nor validates them").
 - Add a short "Failure to launch" note under Command forms: a missing executable is a non-zero exit with a stderr diagnostic, not `{:error, _}`.
+- **Rewrite the Development section around `docker/test`.** It currently lists `mix test`, `mix credo --strict`, `mix dialyzer`, `mix coveralls` and `mix docs` as host commands. Replace them with their `docker/test` equivalents, and state plainly that Docker is the only supported way to run the suite and that `mix test` on a host will fail, because `test/exec_test.exs` starts `/usr/local/fixtures/ignores-sigterm`, a program that exists only inside the image. Say why the image exists: the suite starts real operating system programs, and `docker/Dockerfile` declares which ones rather than trusting the developer's machine to have them.
+- Add `docker/Dockerfile`, `docker/fixtures/ignores-sigterm`, `docker/test` and `.dockerignore` to whatever file-layout description the Development section carries, so a newcomer can find them.
 
 - [ ] **Step 4: Verify every README example actually runs**
 
-Extract each Elixir example and run it in `iex -S mix`. The `Exec.run("echo hi")` and `stream!` examples must produce exactly what the README claims.
+Extract each Elixir example and run it. The `Exec.run("echo hi")` and `stream!` examples must produce exactly what the README claims.
 
 ```bash
-mix run -e 'IO.inspect(Exec.run("echo hi"))'
-mix run -e 'IO.inspect(~S(printf 'a\nb\n') |> Exec.stream!() |> Enum.to_list())'
+docker/test mix run -e 'IO.inspect(Exec.run("echo hi"))'
+docker/test mix run -e 'IO.inspect(~S(printf 'a\nb\n') |> Exec.stream!() |> Enum.to_list())'
 ```
 Expected: `{:ok, %Exec.Result{stdout: "hi\n", stderr: "", exit_status: 0}}` and `[stdout: "a\n", stdout: "b\n", exit: 0]`.
 
 - [ ] **Step 5: Build the docs**
 
 ```bash
-mix docs
+docker/test mix docs
 ```
 Expected: no warnings about broken references. `mix docs` warns on `@doc` cross-references to functions that no longer exist, which catches any `capture/2` or `kill/2` reference missed in Task 2.
 
 - [ ] **Step 6: Full verification**
 
 ```bash
-mix format --check-formatted
-mix compile --warnings-as-errors
-mix test
-mix credo --strict
-mix dialyzer
+docker/test mix format --check-formatted
+docker/test mix compile --warnings-as-errors
+docker/test
+docker/test mix credo --strict
+docker/test mix dialyzer
 ```
 Expected: all pass.
 
@@ -1362,12 +1557,123 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ---
 
+### Task 10: Cover the capabilities the image adds
+
+Four pieces of documented behaviour that no test currently exercises. They land last because all four assert against `%Exec.Result{}` with binary fields, which does not exist until Task 4.
+
+Every test below is written the same way as every other test in the file: no tags, no helpers, using the public API as a caller would.
+
+**Files:**
+- Modify: `docker/Dockerfile` (only if a test needs a program not yet installed)
+- Test: `test/exec_test.exs`
+
+**Interfaces:**
+- Consumes: the final API from Tasks 1–8, and `/usr/local/fixtures/ignores-sigterm` from Task 0.
+- Produces: nothing other code depends on.
+
+- [ ] **Step 1: Write all four groups of tests**
+
+Append to `test/exec_test.exs`:
+
+```elixir
+  describe "large and chunked output" do
+    test "joins output arriving in many chunks into one binary" do
+      {:ok, result} = Exec.run(~S(head -c 1000000 /dev/zero | tr '\0' a))
+
+      assert byte_size(result.stdout) === 1_000_000
+    end
+
+    test "stream!/2 reassembles a line split across chunks" do
+      [{:stdout, line} | _] =
+        ~S(head -c 1000000 /dev/zero | tr '\0' a; echo) |> Exec.stream!() |> Enum.to_list()
+
+      assert byte_size(line) === 1_000_001
+    end
+  end
+
+  describe "output that is not text" do
+    test "run/2 returns raw bytes rather than assuming UTF-8" do
+      {:ok, result} = Exec.run(~S(printf '\377\376'))
+
+      assert result.stdout === <<0xFF, 0xFE>>
+    end
+
+    test "stream!/2 splits lines on bytes rather than assuming UTF-8" do
+      assert ~S(printf '\377\n\376\n') |> Exec.stream!() |> Enum.to_list() ===
+               [stdout: <<0xFF, ?\n>>, stdout: <<0xFE, ?\n>>, exit: 0]
+    end
+  end
+
+  describe "cd and env options" do
+    test "cd: runs the command in the given directory" do
+      assert {:ok, %Result{stdout: "/usr/local/fixtures\n"}} =
+               Exec.run("pwd", cd: "/usr/local/fixtures")
+    end
+
+    test "env: adds variables to the command's environment" do
+      assert {:ok, %Result{stdout: "bar\n"}} = Exec.run(~S(echo "$FOO"), env: [{"FOO", "bar"}])
+    end
+  end
+```
+
+The `stop/1` escalation test already exists from Task 0 and was renamed to the new API in Task 2. Confirm it still reads:
+
+```elixir
+    test "stop/1 ends a program that ignores SIGTERM" do
+      {:ok, program} = Exec.open("/usr/local/fixtures/ignores-sigterm", kill_timeout: 1)
+
+      assert Exec.read(program) === {:ok, {:stdout, "ready\n"}}
+      assert Exec.stop(program) === :ok
+      assert {:ok, {:exit, _status}} = Exec.read(program)
+    end
+```
+
+- [ ] **Step 2: Run them and replace every assumption with an observed value**
+
+Run: `docker/test mix test test/exec_test.exs`
+
+Three of these tests are written from documentation rather than observation and must be corrected to whatever the container actually does. Do not adjust the library to match the test until it is clear which of the two is wrong.
+
+1. **`printf '\377\376'`** — `\xff` is not POSIX and Debian's `/bin/sh` is dash, so the octal form is used here. If dash's `printf` does not produce those bytes, find the form that does with `docker/test sh -c "printf '\377' | od -An -tx1"` and use it.
+2. **`env: [{"FOO", "bar"}]`** — erlexec may want charlists rather than binaries. If the test fails, check what `:exec.run/2` accepts and correct the test, not the library: `:env` is a forwarded option and this plan does not translate forwarded values.
+3. **The escalation test's `_status`** — replace it with the literal value observed in Task 0, Step 7.
+
+If a test needs a program the image does not have, add it to `docker/Dockerfile`'s `apt-get install` line rather than working around its absence. `head`, `tr`, `od` and `printf` are in the base image; nothing here is expected to need a new package.
+
+- [ ] **Step 3: Run the whole suite**
+
+Run: `docker/test`
+Expected: PASS.
+
+- [ ] **Step 4: Commit**
+
+```bash
+docker/test mix format --check-formatted
+docker/test mix credo --strict
+docker/test mix dialyzer
+git add test/exec_test.exs docker
+git commit -m "test: cover chunked output, non-UTF8 bytes, and cd/env
+
+All four are documented behaviour with no previous test. The chunk-joining
+and line-reassembly paths in particular were never exercised, because no
+test produced output large enough to arrive in more than one chunk.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
 ## Self-Review Notes
 
 Spec coverage check, section by section:
 
 | Spec section | Task |
 |---|---|
+| Testing methodology: Docker as the only environment | 0 |
+| Testing methodology: tests written one way, no tags | 0, enforced by Global Constraints |
+| Image contents, fixture, `.dockerignore`, `docker/test` | 0 |
+| Capability coverage (escalation, chunks, bytes, cd/env) | 0 (escalation), 10 (the rest) |
+| Facts to establish by running | 0 Step 7, 10 Step 2 |
 | Module layout (`Exec`, app name stays) | 1 |
 | Public function renames | 2 |
 | Types (`t`, `event`, `exit_status`) | 2, 4 |
@@ -1383,7 +1689,7 @@ Spec coverage check, section by section:
 | Shell-injection warning | 8 |
 | Failure-to-launch documentation | 6 (test), 8 (docs), 9 (README) |
 | README restructure, LICENSE | 9 |
-| Tests | distributed through 3–6, verified in 9 |
+| Tests | distributed through 3–6 and 10, verified in 9 |
 
 Two deviations from the spec as written, both recorded in the spec itself by the corrections committed alongside it:
 
@@ -1391,3 +1697,11 @@ Two deviations from the spec as written, both recorded in the spec itself by the
 2. Error normalization produces `:empty_command` and `{:exec, binary}`, not POSIX atoms. Probing erlexec 2.3 showed that missing executables and permission failures are exits, not start errors, so there are no POSIX reasons to map.
 
 One addition not in the spec: `Exec.Error` (Task 6, Step 4). `stream!/2` previously raised a bare `RuntimeError`, which is indistinguishable from any other runtime failure. A named exception carrying `:reason` is what the `!` in `stream!/2` implies.
+
+### One task that may need to be inserted
+
+Task 0, Step 7 may show that `stop/1` exits its caller with a `GenServer.call` timeout when erlexec's `kill_timeout` reaches the call's own 5-second default. If it does, that is a live bug in `lib/elixir_exec/connection.ex` and needs its own task, placed between Task 0 and Task 1, before any renaming is stacked on top of it. The plan cannot specify that task in advance because the fix depends on which of the two timeouts actually fires first.
+
+### Formatting
+
+`mix format` edits files and a container edits nothing on the host, so the plan checks formatting with `docker/test mix format --check-formatted` rather than running the formatter. Write formatted code; if the check fails and Elixir is installed on the host, `mix format` fixes it, and if it is not, the check's output names the file and line to correct by hand.
