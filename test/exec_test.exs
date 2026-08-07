@@ -277,6 +277,45 @@ defmodule ExecTest do
     end
   end
 
+  describe "large and chunked output" do
+    test "joins output arriving in many chunks into one binary" do
+      {:ok, result} = Exec.run(~S(head -c 1000000 /dev/zero | tr '\0' a))
+
+      assert byte_size(result.stdout) === 1_000_000
+    end
+
+    test "stream!/2 reassembles a line split across chunks" do
+      [{:stdout, line} | _] =
+        ~S(head -c 1000000 /dev/zero | tr '\0' a; echo) |> Exec.stream!() |> Enum.to_list()
+
+      assert byte_size(line) === 1_000_001
+    end
+  end
+
+  describe "output that is not text" do
+    test "run/2 returns raw bytes rather than assuming UTF-8" do
+      {:ok, result} = Exec.run(~S(printf '\377\376'))
+
+      assert result.stdout === <<0xFF, 0xFE>>
+    end
+
+    test "stream!/2 splits lines on bytes rather than assuming UTF-8" do
+      assert ~S(printf '\377\n\376\n') |> Exec.stream!() |> Enum.to_list() ===
+               [stdout: <<0xFF, ?\n>>, stdout: <<0xFE, ?\n>>, exit: 0]
+    end
+  end
+
+  describe "cd and env options" do
+    test "cd: runs the command in the given directory" do
+      assert {:ok, %Result{stdout: "/usr/local/fixtures\n"}} =
+               Exec.run("pwd", cd: "/usr/local/fixtures")
+    end
+
+    test "env: adds variables to the command's environment" do
+      assert {:ok, %Result{stdout: "bar\n"}} = Exec.run(~S(echo "$FOO"), env: [{"FOO", "bar"}])
+    end
+  end
+
   # A fractional argument `sleep` accepts, unique per test, so one test's
   # program is never confused with another's or with a stray from an earlier
   # run. 300 seconds is far longer than any poll below, so a program going
