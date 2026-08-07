@@ -37,9 +37,9 @@ defmodule Exec.Program do
   # slow program never exits the caller and never leaves a late reply behind.
   def read(conn, timeout), do: GenServer.call(conn, {:read, timeout}, :infinity)
 
-  def write(conn, data), do: GenServer.call(conn, {:write, data})
+  def write(conn, data), do: call(conn, {:write, data})
 
-  def stop(conn), do: GenServer.call(conn, :stop)
+  def stop(conn), do: call(conn, :stop)
 
   # stop/1 ends the OS program and leaves this process alive, because the caller
   # still has the remaining events -- including the exit -- to read. shutdown/1
@@ -73,7 +73,20 @@ defmodule Exec.Program do
     end
   end
 
-  def kill(conn, signal), do: GenServer.call(conn, {:kill, signal})
+  def kill(conn, signal), do: call(conn, {:kill, signal})
+
+  # A handle is spent once its exit has been read: this process stops itself on
+  # that read, so a later call finds nothing there. GenServer.call exits the
+  # caller with :noproc, which says more about how this is built than about what
+  # happened. To a caller it means the same as a program that has ended.
+  #
+  # read/2 deliberately does not go through here. Its exit is how a read loop
+  # terminates, and returning a value instead would make a naive loop spin.
+  defp call(conn, message) do
+    GenServer.call(conn, message)
+  catch
+    :exit, {reason, _} when reason in [:noproc, :normal] -> {:error, :not_running}
+  end
 
   # The owner monitor is never demonitored: this process stops on that DOWN,
   # and monitors are released when the process holding them dies.
@@ -93,7 +106,8 @@ defmodule Exec.Program do
            os_pid: os_pid,
            owner_ref: Process.monitor(owner),
            events: :queue.new(),
-           reader: nil
+           reader: nil,
+           exited?: false
          }}
 
       {:error, reason} ->
@@ -114,6 +128,23 @@ defmodule Exec.Program do
       {:empty, _events} ->
         {:noreply, %{state | reader: {from, start_read_timer(timeout)}}}
     end
+  end
+
+  # The program has ended, but this process is still alive because its exit has
+  # not been read yet. erlexec answers these three with charlist messages of its
+  # own ("pid not alive", "Cannot kill a pid not managed by this application"),
+  # and :exec.send/2 quietly accepts a write nobody will ever receive. One
+  # documented reason is more use than either.
+  def handle_call({:write, _data}, _from, %{exited?: true} = state) do
+    {:reply, {:error, :not_running}, state}
+  end
+
+  def handle_call(:stop, _from, %{exited?: true} = state) do
+    {:reply, {:error, :not_running}, state}
+  end
+
+  def handle_call({:kill, _signal}, _from, %{exited?: true} = state) do
+    {:reply, {:error, :not_running}, state}
   end
 
   def handle_call({:write, :eof}, _from, state) do
@@ -149,7 +180,7 @@ defmodule Exec.Program do
   # handles its parent's exit itself, so any EXIT reaching here is the program
   # ending. Its reason carries the exit status (exec.erl:1224-1231).
   def handle_info({:EXIT, _controller, reason}, state) do
-    deliver_or_queue(state, {:exit, decode_exit_reason(reason)})
+    deliver_or_queue(%{state | exited?: true}, {:exit, decode_exit_reason(reason)})
   end
 
   def handle_info(:read_timeout, %{reader: {from, _timer}} = state) do

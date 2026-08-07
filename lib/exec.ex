@@ -315,7 +315,7 @@ defmodule Exec do
       :ok = Exec.write(program, "hello\\n")
       :ok = Exec.write(program, :eof)
   """
-  @spec write(t(), iodata() | :eof) :: :ok | {:error, term()}
+  @spec write(t(), iodata() | :eof) :: :ok | {:error, :not_running}
   def write(program, data), do: Program.write(program, data)
 
   @doc """
@@ -327,7 +327,7 @@ defmodule Exec do
 
   A program stopped this way reports exit status `0`, not a signal.
   """
-  @spec stop(t()) :: :ok | {:error, term()}
+  @spec stop(t()) :: :ok | {:error, :not_running}
   def stop(program), do: Program.stop(program)
 
   @doc """
@@ -342,7 +342,7 @@ defmodule Exec do
       :ok = Exec.signal(program, :sigkill)
       :ok = Exec.signal(program, 9)
   """
-  @spec signal(t(), atom() | non_neg_integer()) :: :ok | {:error, term()}
+  @spec signal(t(), atom() | non_neg_integer()) :: :ok | {:error, :not_running}
   def signal(program, signal), do: Program.kill(program, signal_number!(signal))
 
   @doc """

@@ -227,6 +227,40 @@ defmodule ExecTest do
     end
   end
 
+  describe "a program that has ended" do
+    test "write/2, stop/1 and signal/2 report it, with the exit still unread" do
+      {:ok, program} = Exec.open("echo hi")
+
+      # Wait for the exit to reach the handle without reading it, so the handle
+      # is still alive and holding the queued events.
+      Process.sleep(500)
+
+      assert Exec.write(program, "x") === {:error, :not_running}
+      assert Exec.stop(program) === {:error, :not_running}
+      assert Exec.signal(program, :sigterm) === {:error, :not_running}
+    end
+
+    test "the queued output is still readable afterwards" do
+      {:ok, program} = Exec.open("echo hi")
+      Process.sleep(500)
+
+      assert Exec.write(program, "x") === {:error, :not_running}
+
+      assert Exec.read(program) === {:ok, {:stdout, "hi\n"}}
+      assert Exec.read(program) === {:ok, {:exit, 0}}
+    end
+
+    test "write/2, stop/1 and signal/2 report it on a spent handle" do
+      {:ok, program} = Exec.open("echo hi")
+      assert Exec.read(program) === {:ok, {:stdout, "hi\n"}}
+      assert Exec.read(program) === {:ok, {:exit, 0}}
+
+      assert Exec.write(program, "x") === {:error, :not_running}
+      assert Exec.stop(program) === {:error, :not_running}
+      assert Exec.signal(program, :sigterm) === {:error, :not_running}
+    end
+  end
+
   describe "run/2" do
     test "returns stdout, stderr and the exit status" do
       assert Exec.run("echo out; echo err 1>&2") ===
