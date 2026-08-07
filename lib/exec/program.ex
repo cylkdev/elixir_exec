@@ -26,9 +26,11 @@ defmodule Exec.Program do
 
   use GenServer
 
-  # The four signals exec-port installs a handler for (exec.cpp:152-155). Their
-  # numbers are identical on Linux and Darwin because all four are below 16,
-  # which is where POSIX stops guaranteeing them.
+  # The four signals exec-port installs a termination handler for
+  # (exec.cpp:151-154), by number: SIGHUP, SIGINT, SIGPIPE, SIGTERM. Those four
+  # numbers happen to be the same on Linux and Darwin, checked one at a time,
+  # and no rule guarantees that -- SIGUSR1 is below 16 too, and is 10 on Linux
+  # and 30 on Darwin.
   @swallowable_signals [1, 2, 13, 15]
 
   # Far longer than any observed fork-to-execve window, and short enough that no
@@ -194,7 +196,7 @@ defmodule Exec.Program do
   # handles its parent's exit itself, so any EXIT reaching here is the program
   # ending. Its reason carries the exit status (exec.erl:1224-1231).
   def handle_info({:EXIT, _controller, reason}, state) do
-    deliver_or_queue(%{state | exited?: true}, {:exit, decode_exit_reason(reason)})
+    deliver_or_queue(%{state | exited?: true}, {:exit, Exec.decode_exit_reason(reason)})
   end
 
   def handle_info(:read_timeout, %{reader: {from, _timer}} = state) do
@@ -308,14 +310,5 @@ defmodule Exec.Program do
     run_opts = Keyword.drop(opts, [:stdin, :stdout, :stderr])
 
     proplist ++ run_opts
-  end
-
-  defp decode_exit_reason(status) do
-    case status do
-      :normal -> 0
-      {:exit_status, raw} when Bitwise.band(raw, 0xFF) === 0 -> Bitwise.bsr(raw, 8)
-      {:exit_status, raw} -> raw |> Bitwise.band(0x7F) |> :exec.signal() |> then(&{:signal, &1})
-      other -> other
-    end
   end
 end

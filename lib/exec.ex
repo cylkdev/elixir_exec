@@ -133,9 +133,8 @@ defmodule Exec do
     :debug
   ]
 
-  # Signal numbers are POSIX-guaranteed only for 1..15. Above that they are
-  # platform-assigned: SIGUSR1 is 10 on Linux and 30 on Darwin, SIGCHLD 17 and
-  # 20, SIGSTOP 19 and 17.
+  # Signal numbers are not the same on every system. SIGUSR1 is 10 on Linux and
+  # 30 on Darwin, SIGCHLD 17 and 20, SIGSTOP 19 and 17.
   #
   # erlexec's own table (exec.erl:816) hardcodes the Linux numbers, so asking it
   # to translate :sigchld on a Mac sends signal 17 -- SIGSTOP there. It also has
@@ -145,9 +144,18 @@ defmodule Exec do
   # controller then kills the running program: a typo destroys the thing it was
   # meant to signal.
   #
-  # Resolving names here and passing :exec.kill/2 an integer means erlexec's
-  # table is never consulted and that crash is unreachable.
-  @signals_posix %{
+  # Resolving names here, and passing :exec.kill/2 an integer, means erlexec's
+  # table is never consulted and that crash is unreachable. The same tables are
+  # read backwards by signal_name/1 below, so a signal number arriving from a
+  # dying program is named from the running system's table rather than from
+  # erlexec's.
+  #
+  # The entries below carry the number each name has on both Linux and Darwin.
+  # They are grouped this way because the numbers were checked and found to
+  # agree, not because any rule guarantees it: SIGUSR1 is under 16 and differs.
+  # Checked with `kill -l <number>` on Debian and `python3 -c "import signal"`
+  # on macOS 15.
+  @signals_shared %{
     sighup: 1,
     sigint: 2,
     sigquit: 3,
@@ -159,17 +167,24 @@ defmodule Exec do
     sigsegv: 11,
     sigpipe: 13,
     sigalrm: 14,
-    sigterm: 15
+    sigterm: 15,
+    sigttin: 21,
+    sigttou: 22,
+    sigxcpu: 24,
+    sigxfsz: 25,
+    sigvtalrm: 26,
+    sigprof: 27,
+    sigwinch: 28
   }
 
+  # The names whose number the two systems disagree about.
   @signals_linux %{
     sigusr1: 10,
     sigusr2: 12,
     sigchld: 17,
     sigcont: 18,
     sigstop: 19,
-    sigtstp: 20,
-    sigwinch: 28
+    sigtstp: 20
   }
 
   @signals_darwin %{
@@ -178,8 +193,7 @@ defmodule Exec do
     sigchld: 20,
     sigcont: 19,
     sigstop: 17,
-    sigtstp: 18,
-    sigwinch: 28
+    sigtstp: 18
   }
 
   @typedoc """
@@ -364,8 +378,10 @@ defmodule Exec do
 
   `signal` is a name such as `:sigterm`, `:sigkill` or `:sigusr1`, or the
   integer number. Names are resolved for the current operating system, because
-  only signals 1 to 15 have numbers POSIX guarantees: `:sigusr1` is 10 on Linux
-  and 30 on Darwin.
+  the two systems disagree about some of the numbers: `:sigusr1` is 10 on Linux
+  and 30 on Darwin. The same table names the signal that `read/2` reports in
+  `{:exit, {:signal, name}}`, so a signal sent by name comes back under that
+  name.
 
   Unlike `stop/1` nothing is escalated: exactly one signal is sent, to the
   program's whole process group.
@@ -607,10 +623,37 @@ defmodule Exec do
 
   defp resolve_executable_path(command), do: command
 
+  # Decodes the exit reason erlexec reports for a program. Kept here rather than
+  # in Exec.Program because it reads the signal tables above backwards, and one
+  # module owning both directions of that mapping is what keeps a name sent and
+  # a name reported the same name.
+  @doc false
+  @spec decode_exit_reason(term()) :: exit_status() | term()
+  def decode_exit_reason(:normal), do: 0
+
+  def decode_exit_reason({:exit_status, raw}) do
+    case Bitwise.band(raw, 0xFF) do
+      0 -> Bitwise.bsr(raw, 8)
+      _ -> {:signal, signal_name(Bitwise.band(raw, 0x7F))}
+    end
+  end
+
+  def decode_exit_reason(other), do: other
+
+  # A number the running system's table has no name for is returned as it
+  # stands, which says less than a name but never says something false.
+  defp signal_name(number) do
+    signal_table()
+    |> Enum.find_value(fn {name, n} -> if n === number, do: name end)
+    |> Kernel.||(number)
+  end
+
+  # No entry in either platform map shares a number with an entry in the shared
+  # map, so the reverse lookup above has exactly one answer.
   defp signal_table do
     case :os.type() do
-      {:unix, :darwin} -> Map.merge(@signals_posix, @signals_darwin)
-      {:unix, _} -> Map.merge(@signals_posix, @signals_linux)
+      {:unix, :darwin} -> Map.merge(@signals_shared, @signals_darwin)
+      {:unix, _} -> Map.merge(@signals_shared, @signals_linux)
     end
   end
 

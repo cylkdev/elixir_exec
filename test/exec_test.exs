@@ -177,13 +177,62 @@ defmodule ExecTest do
   end
 
   describe "signal/2 argument handling" do
-    test "sends a signal erlexec's own table does not know" do
+    # The name has to survive the round trip, not merely end the program: on a
+    # Mac the number 30 is SIGUSR1 and on Linux it is SIGPWR, so a table read in
+    # one direction and not the other reports a signal nobody sent. Both of
+    # these are names erlexec's own table has no entry for, and both are
+    # numbered differently on Linux and Darwin.
+    test "a signal whose number differs between platforms round-trips by name" do
       token = unique_token()
       {:ok, program} = Exec.open(["sleep", token])
-
       assert await_os_process(token, :present)
+
       assert Exec.signal(program, :sigusr1) === :ok
-      assert await_os_process(token, :absent)
+      assert Exec.read(program) === {:ok, {:exit, {:signal, :sigusr1}}}
+    end
+
+    test "sigusr2 round-trips by name" do
+      token = unique_token()
+      {:ok, program} = Exec.open(["sleep", token])
+      assert await_os_process(token, :present)
+
+      assert Exec.signal(program, :sigusr2) === :ok
+      assert Exec.read(program) === {:ok, {:exit, {:signal, :sigusr2}}}
+    end
+
+    # Numbered 27 on both systems, and not in erlexec's table either.
+    test "a signal numbered the same on both platforms round-trips by name" do
+      token = unique_token()
+      {:ok, program} = Exec.open(["sleep", token])
+      assert await_os_process(token, :present)
+
+      assert Exec.signal(program, :sigprof) === :ok
+      assert Exec.read(program) === {:ok, {:exit, {:signal, :sigprof}}}
+    end
+
+    # Accepted by erlexec before this module took over resolving names, so
+    # dropping them would have been a silent breaking change.
+    test "accepts the resource-limit names" do
+      token = unique_token()
+      {:ok, program} = Exec.open(["sleep", token])
+      assert await_os_process(token, :present)
+
+      assert Exec.signal(program, :sigxcpu) === :ok
+      assert Exec.read(program) === {:ok, {:exit, {:signal, :sigxcpu}}}
+    end
+
+    # SIGTTIN and SIGTTOU stop a program rather than end it, so what is checked
+    # here is that the name resolves and the send is accepted. The stop that
+    # follows escalates to SIGKILL, which reaches a stopped program.
+    test "accepts the job-control names" do
+      token = unique_token()
+      {:ok, program} = Exec.open(["sleep", token], kill_timeout: 1)
+      assert await_os_process(token, :present)
+
+      assert Exec.signal(program, :sigttin) === :ok
+      assert Exec.signal(program, :sigttou) === :ok
+      assert Exec.stop(program) === :ok
+      assert Exec.read(program) === {:ok, {:exit, 0}}
     end
 
     test "an unknown signal name raises and leaves the program running" do
