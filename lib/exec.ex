@@ -54,23 +54,24 @@ defmodule Exec do
   Pass `owner: pid` to tie a program's lifetime to a process other than the
   caller.
 
-  ## Exit status of a binary command
+  ## Exit status
 
-  A binary command reports the exit status of `/bin/sh`, which is not always the
-  exit status of the program inside it. A shell that ran a single program exits
-  with that program's code, but a program killed by a signal makes the shell
-  exit `128 + signal`, and the shell writes its own diagnostic to standard
-  error. Terminating `sleep 30` produces:
+  `stop/1` and `signal/2` signal the program's whole process group, so a
+  binary command and a list command report a signal the same way:
+
+      {:exit, {:signal, :sigterm}}
+
+  A signal that arrives from outside that group is different. It reaches only
+  the program, leaving `/bin/sh` to reap it and exit `128 + signal` with a
+  diagnostic of its own on standard error. An operator running
+  `kill -TERM <pid>` against the inner program of `Exec.open("sleep 30")`
+  produces:
 
       {:stderr, "Terminated\\n"}
       {:exit, 143}
 
-  That `"Terminated\\n"` comes from the shell, not from the program.
-
-  List form has no shell in between, reports the program's own status as
-  `{:signal, name}`, and adds nothing to standard error:
-
-      {:exit, {:signal, :sigterm}}
+  That `"Terminated\\n"` comes from the shell, not from the program. A list
+  command has no shell to write it.
 
   ## Failure to launch
 
@@ -127,6 +128,9 @@ defmodule Exec do
   `:winsz`, `:pty`, `:capabilities` and `:debug`. See
   [erlexec](https://hexdocs.pm/erlexec/exec.html) for their meanings.
 
+  `:group` is not accepted. This module sets it, so that `stop/1` and
+  `signal/2` reach the program's whole process group.
+
   Any other key raises `ArgumentError`, as does a value the runner rejects.
   """
   @type options :: keyword()
@@ -134,7 +138,7 @@ defmodule Exec do
   @typedoc "A running program, as returned by `open/2`."
   @opaque t :: pid()
 
-  @typedoc "How a command ended: a shell exit code, or `{:signal, name}` if a signal killed it."
+  @typedoc "How a command ended: an exit code, or `{:signal, name}` if a signal killed it."
   @type exit_status :: non_neg_integer() | {:signal, atom() | pos_integer()}
 
   @typedoc "One thing a program produced, as returned by `read/2`."
@@ -167,8 +171,8 @@ defmodule Exec do
 
   ## Options
 
-  Accepts every option in `t:options/0` except `:timeout`, which applies to
-  `run/2`. `read/2` takes its own timeout per call.
+  Accepts every option in `t:options/0`. `:timeout` is accepted and ignored —
+  it applies to `run/2`. `read/2` takes its own timeout per call.
 
   ## Errors
 
@@ -217,8 +221,9 @@ defmodule Exec do
   @doc """
   Reads the next event from `program`.
 
-  Blocks until an event arrives or `timeout` milliseconds pass. Events are held
-  in order, so none is lost between calls.
+  Blocks until an event arrives or `timeout` milliseconds pass. `timeout`
+  defaults to `:infinity`. Events are held in order, so none is lost between
+  calls.
 
   `{:ok, {:exit, status}}` is the last event a program produces. The handle is
   spent once it is read, and reading again exits the calling process.
@@ -255,8 +260,8 @@ defmodule Exec do
   Ends `program` gracefully.
 
   Sends `SIGTERM` and escalates to `SIGKILL` after roughly five seconds, so a
-  program that ignores `SIGTERM` can take that long to end. `signal/2` with
-  `:sigkill` ends it immediately.
+  program that ignores `SIGTERM` can take that long to end. The `:kill_timeout`
+  option changes that delay. `signal/2` with `:sigkill` ends it immediately.
 
   A program stopped this way reports exit status `0`, not a signal.
   """
@@ -391,8 +396,8 @@ defmodule Exec do
 
   ## Options
 
-  Accepts every option in `t:options/0` except `:timeout`, which a lazy stream
-  has no total duration to apply to.
+  Accepts every option in `t:options/0`. `:timeout` is accepted and ignored —
+  a lazy stream has no total duration to apply to.
 
   ## Errors
 
