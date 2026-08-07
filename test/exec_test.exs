@@ -5,169 +5,169 @@ defmodule ExecTest do
 
   doctest Exec
 
-  describe "run/2, read/2, write/2" do
+  describe "open/2, read/2, write/2" do
     test "reads a program's output, then its exit" do
-      {:ok, conn} = Exec.run("echo hi")
+      {:ok, program} = Exec.open("echo hi")
 
-      assert Exec.read(conn) === {:ok, {:stdout, "hi\n"}}
-      assert Exec.read(conn) === {:ok, {:exit, 0}}
+      assert Exec.read(program) === {:ok, {:stdout, "hi\n"}}
+      assert Exec.read(program) === {:ok, {:exit, 0}}
     end
 
     test "reads stderr separately from stdout" do
-      {:ok, conn} = Exec.run("echo err 1>&2")
+      {:ok, program} = Exec.open("echo err 1>&2")
 
-      assert Exec.read(conn) === {:ok, {:stderr, "err\n"}}
-      assert Exec.read(conn) === {:ok, {:exit, 0}}
+      assert Exec.read(program) === {:ok, {:stderr, "err\n"}}
+      assert Exec.read(program) === {:ok, {:exit, 0}}
     end
 
     test "reports a non-zero exit as the shell's code" do
-      {:ok, conn} = Exec.run("exit 3")
+      {:ok, program} = Exec.open("exit 3")
 
-      assert Exec.read(conn) === {:ok, {:exit, 3}}
+      assert Exec.read(program) === {:ok, {:exit, 3}}
     end
 
     test "reports a signal death as {:signal, name}" do
-      {:ok, conn} = Exec.run("kill -TERM $$")
+      {:ok, program} = Exec.open("kill -TERM $$")
 
-      assert Exec.read(conn) === {:ok, {:exit, {:signal, :sigterm}}}
+      assert Exec.read(program) === {:ok, {:exit, {:signal, :sigterm}}}
     end
 
     test "a read that finds nothing within its timeout returns {:error, :timeout}" do
-      {:ok, conn} = Exec.run("sleep 30")
+      {:ok, program} = Exec.open("sleep 30")
 
-      assert Exec.read(conn, 0) === {:error, :timeout}
+      assert Exec.read(program, 0) === {:error, :timeout}
 
-      assert Exec.stop(conn) === :ok
+      assert Exec.stop(program) === :ok
     end
 
     test "write/2 sends data the program reads back, and :eof closes it" do
-      {:ok, conn} = Exec.run("cat", stdin: true)
+      {:ok, program} = Exec.open("cat", stdin: true)
 
-      assert Exec.write(conn, "hello\n") === :ok
-      assert Exec.read(conn) === {:ok, {:stdout, "hello\n"}}
+      assert Exec.write(program, "hello\n") === :ok
+      assert Exec.read(program) === {:ok, {:stdout, "hello\n"}}
 
-      assert Exec.write(conn, :eof) === :ok
-      assert Exec.read(conn) === {:ok, {:exit, 0}}
+      assert Exec.write(program, :eof) === :ok
+      assert Exec.read(program) === {:ok, {:exit, 0}}
     end
 
     test "stdin: false leaves the program without stdin, so it sees EOF at once" do
-      {:ok, conn} = Exec.run("cat", stdin: false)
+      {:ok, program} = Exec.open("cat", stdin: false)
 
-      assert Exec.read(conn) === {:ok, {:exit, 0}}
+      assert Exec.read(program) === {:ok, {:exit, 0}}
     end
 
     test "stdout: false delivers no stdout, only the exit" do
-      {:ok, conn} = Exec.run("echo hi", stdout: false)
+      {:ok, program} = Exec.open("echo hi", stdout: false)
 
-      assert Exec.read(conn) === {:ok, {:exit, 0}}
+      assert Exec.read(program) === {:ok, {:exit, 0}}
     end
 
     test "stderr: false delivers no stderr, only the exit" do
-      {:ok, conn} = Exec.run("echo hi 1>&2", stderr: false)
+      {:ok, program} = Exec.open("echo hi 1>&2", stderr: false)
 
-      assert Exec.read(conn) === {:ok, {:exit, 0}}
+      assert Exec.read(program) === {:ok, {:exit, 0}}
     end
 
     test "list form resolves a bare name through PATH" do
-      {:ok, conn} = Exec.run(["echo", "hi"])
+      {:ok, program} = Exec.open(["echo", "hi"])
 
-      assert Exec.read(conn) === {:ok, {:stdout, "hi\n"}}
+      assert Exec.read(program) === {:ok, {:stdout, "hi\n"}}
     end
 
     test "list form uses a path containing a slash as given" do
-      {:ok, conn} = Exec.run(["/bin/echo", "hi"])
+      {:ok, program} = Exec.open(["/bin/echo", "hi"])
 
-      assert Exec.read(conn) === {:ok, {:stdout, "hi\n"}}
+      assert Exec.read(program) === {:ok, {:stdout, "hi\n"}}
     end
 
     test "list form coerces its arguments to strings" do
-      {:ok, conn} = Exec.run(["echo", 42])
+      {:ok, program} = Exec.open(["echo", 42])
 
-      assert Exec.read(conn) === {:ok, {:stdout, "42\n"}}
+      assert Exec.read(program) === {:ok, {:stdout, "42\n"}}
     end
 
     test "an empty command is an error" do
-      assert Exec.run("") === {:error, ~c"empty command provided"}
+      assert Exec.open("") === {:error, ~c"empty command provided"}
     end
 
     test "an option the runner does not take is ignored" do
-      {:ok, conn} = Exec.run("echo hi", definitely_not_an_option: 1)
+      {:ok, program} = Exec.open("echo hi", definitely_not_an_option: 1)
 
-      assert Exec.read(conn) === {:ok, {:stdout, "hi\n"}}
+      assert Exec.read(program) === {:ok, {:stdout, "hi\n"}}
     end
   end
 
-  describe "stop/1 and kill/2" do
-    # A requested stop is reported as a normal exit, unlike kill/2 below, which
+  describe "stop/1 and signal/2" do
+    # A requested stop is reported as a normal exit, unlike signal/2 below, which
     # surfaces the signal.
     test "stop/1 ends the program" do
-      {:ok, conn} = Exec.run("sleep 30")
+      {:ok, program} = Exec.open("sleep 30")
 
-      assert Exec.stop(conn) === :ok
-      assert Exec.read(conn) === {:ok, {:exit, 0}}
+      assert Exec.stop(program) === :ok
+      assert Exec.read(program) === {:ok, {:exit, 0}}
     end
 
     test "kill/2 ends the program with the signal given" do
-      {:ok, conn} = Exec.run("sleep 30")
+      {:ok, program} = Exec.open("sleep 30")
 
-      assert Exec.kill(conn, 9) === :ok
-      assert Exec.read(conn) === {:ok, {:exit, {:signal, :sigkill}}}
+      assert Exec.signal(program, 9) === :ok
+      assert Exec.read(program) === {:ok, {:exit, {:signal, :sigkill}}}
     end
 
     test "stop/1 ends a program that ignores SIGTERM" do
-      {:ok, conn} = Exec.run("/usr/local/fixtures/ignores-sigterm", kill_timeout: 1)
+      {:ok, program} = Exec.open("/usr/local/fixtures/ignores-sigterm", kill_timeout: 1)
 
-      assert Exec.read(conn) === {:ok, {:stdout, "ready\n"}}
-      assert Exec.stop(conn) === :ok
-      assert Exec.read(conn) === {:ok, {:exit, 0}}
+      assert Exec.read(program) === {:ok, {:stdout, "ready\n"}}
+      assert Exec.stop(program) === :ok
+      assert Exec.read(program) === {:ok, {:exit, 0}}
     end
   end
 
-  describe "capture/2" do
+  describe "run/2" do
     test "returns stdout, stderr and the exit status" do
-      assert Exec.capture("echo out; echo err 1>&2") ===
+      assert Exec.run("echo out; echo err 1>&2") ===
                {:ok, %Output{stdout: ["out\n"], stderr: ["err\n"], exit_status: 0}}
     end
 
     test "reports a non-zero exit as success, with the shell's code" do
-      assert Exec.capture("echo partial; exit 3") ===
+      assert Exec.run("echo partial; exit 3") ===
                {:ok, %Output{stdout: ["partial\n"], stderr: [], exit_status: 3}}
     end
 
     test "a program that outlives its timeout returns {:error, :timeout}" do
-      assert Exec.capture("sleep 30", timeout: 200) === {:error, :timeout}
+      assert Exec.run("sleep 30", timeout: 200) === {:error, :timeout}
     end
 
     test "an empty command is an error, not an exit status" do
-      assert Exec.capture("") === {:error, ~c"empty command provided"}
+      assert Exec.run("") === {:error, ~c"empty command provided"}
     end
   end
 
-  describe "stream/2" do
+  describe "stream!/2" do
     # stdout and stderr are not ordered relative to each other, so each is
     # asserted on its own.
     test "yields stdout lines with the delimiter retained, then the exit status" do
-      assert ~S(printf 'a\nb\n') |> Exec.stream() |> Enum.to_list() ===
+      assert ~S(printf 'a\nb\n') |> Exec.stream!() |> Enum.to_list() ===
                [{:stdout, "a\n"}, {:stdout, "b\n"}, {:exit_status, 0}]
     end
 
     test "yields stderr lines the same way" do
-      assert ~S(printf 'e\n' 1>&2) |> Exec.stream() |> Enum.to_list() ===
+      assert ~S(printf 'e\n' 1>&2) |> Exec.stream!() |> Enum.to_list() ===
                [{:stderr, "e\n"}, {:exit_status, 0}]
     end
 
     test "flushes a trailing partial line that has no delimiter" do
-      assert ~S(printf 'a\nb') |> Exec.stream() |> Enum.to_list() ===
+      assert ~S(printf 'a\nb') |> Exec.stream!() |> Enum.to_list() ===
                [{:stdout, "a\n"}, {:stdout, "b"}, {:exit_status, 0}]
     end
 
     test "halting early stops the program and emits no exit status" do
-      assert "echo ready; sleep 30" |> Exec.stream() |> Enum.take(1) ===
+      assert "echo ready; sleep 30" |> Exec.stream!() |> Enum.take(1) ===
                [{:stdout, "ready\n"}]
     end
 
     test "a command that cannot be started raises" do
-      stream = Exec.stream("")
+      stream = Exec.stream!("")
 
       assert_raise RuntimeError, fn -> Enum.to_list(stream) end
     end
@@ -179,7 +179,7 @@ defmodule ExecTest do
 
       owner =
         spawn(fn ->
-          {:ok, conn} = Exec.run("sleep 30")
+          {:ok, conn} = Exec.open("sleep 30")
           send(me, {:conn, conn})
 
           receive do
@@ -198,7 +198,7 @@ defmodule ExecTest do
 
     test "a program does not outlive its own process, even killed outright" do
       token = unique_token()
-      {:ok, conn} = Exec.run("sleep #{token}")
+      {:ok, conn} = Exec.open("sleep #{token}")
 
       assert await_os_process(token, :present)
 
@@ -214,7 +214,7 @@ defmodule ExecTest do
     @tag :capture_log
     test "a program does not outlive the supervision tree that owns it" do
       token = unique_token()
-      {:ok, _conn} = Exec.run("sleep #{token}")
+      {:ok, _conn} = Exec.open("sleep #{token}")
 
       assert await_os_process(token, :present)
 
@@ -231,19 +231,19 @@ defmodule ExecTest do
     # mechanism, which differs between shells.
     test "stop/1 ends the program itself, not merely the shell that started it" do
       token = unique_token()
-      {:ok, conn} = Exec.run("sleep #{token}")
+      {:ok, program} = Exec.open("sleep #{token}")
 
       assert await_os_process(token, :present)
-      assert Exec.stop(conn) === :ok
+      assert Exec.stop(program) === :ok
       assert await_os_process(token, :absent)
     end
 
-    test "kill/2 reaches the program itself" do
+    test "signal/2 reaches the program itself" do
       token = unique_token()
-      {:ok, conn} = Exec.run("sleep #{token}")
+      {:ok, program} = Exec.open("sleep #{token}")
 
       assert await_os_process(token, :present)
-      assert Exec.kill(conn, 9) === :ok
+      assert Exec.signal(program, 9) === :ok
       assert await_os_process(token, :absent)
     end
   end

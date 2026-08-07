@@ -4,7 +4,7 @@ defmodule Exec do
 
   Start a program, read from it, write to it, stop it:
 
-      {:ok, conn} = Exec.run("cat")
+      {:ok, conn} = Exec.open("cat")
 
       Exec.write(conn, "hello\\n")
       {:ok, {:stdout, "hello\\n"}} = Exec.read(conn)
@@ -12,7 +12,7 @@ defmodule Exec do
       Exec.write(conn, :eof)
       {:ok, {:exit, 0}} = Exec.read(conn)
 
-  `capture/2` and `stream/2` are that loop written for you — one collects
+  `run/2` and `stream!/2` are that loop written for you — one collects
   everything, the other hands it to you as it arrives.
 
   ## Lifetime
@@ -33,7 +33,7 @@ defmodule Exec do
   @typedoc """
   Options for the command, as a keyword list.
 
-  `timeout: ms` is read by `capture/2` and `owner: pid` by `run/2`. Of the
+  `timeout: ms` is read by `run/2` and `owner: pid` by `open/2`. Of the
   rest, these are forwarded to `:exec.run/2` unchanged: `:executable`, `:cd`,
   `:env`, `:kill`, `:kill_timeout`, `:group`, `:user`, `:nice`,
   `:success_exit_code`, `:winsz`, `:pty`, `:capabilities` and `:debug`. Any
@@ -44,8 +44,8 @@ defmodule Exec do
   """
   @type options :: keyword()
 
-  @typedoc "A running program. Pass it back to `read/2`, `write/2`, `stop/1` and `kill/2`."
-  @opaque conn :: pid()
+  @typedoc "A running program. Pass it back to `read/2`, `write/2`, `stop/1` and `signal/2`."
+  @opaque t :: pid()
 
   @typedoc "One thing a program produced. `status` is a shell exit code, or `{:signal, name}`."
   @type event :: {:stdout, binary()} | {:stderr, binary()} | {:exit, term()}
@@ -57,7 +57,7 @@ defmodule Exec do
   PATH lookup, pipes, and redirection), or a list of strings, which is
   passed to `execve` directly with no shell involved. In list form, a bare
   executable name (no `/`) is resolved against `PATH` first, so
-  `run(["echo", "hi"])` works the same as `run("echo hi")`. A name that
+  `open(["echo", "hi"])` works the same as `open("echo hi")`. A name that
   contains `/` is used exactly as given.
 
   stdin, stdout and stderr are connected by default, so you can `write/2` to
@@ -71,12 +71,12 @@ defmodule Exec do
   caller. The owner is held by a monitor, not a link, so the reverse is not
   true: a program failing or exiting non-zero never disturbs you.
 
-      spawn(fn -> {:ok, _} = Exec.run("sleep 3600") end)
+      spawn(fn -> {:ok, _} = Exec.open("sleep 3600") end)
       # that process exits immediately, and `sleep 3600` is killed with it.
   """
-  @spec run(binary() | [binary()]) :: {:ok, conn()} | {:error, term()}
-  @spec run(binary() | [binary()], options()) :: {:ok, conn()} | {:error, term()}
-  def run(command, options \\ []) do
+  @spec open(binary() | [binary()]) :: {:ok, t()} | {:error, term()}
+  @spec open(binary() | [binary()], options()) :: {:ok, t()} | {:error, term()}
+  def open(command, options \\ []) do
     {owner, options} = Keyword.pop(options, :owner, self())
     command = normalize_command(command)
     ProgramSupervisor.start_program(command, owner, options)
@@ -94,9 +94,9 @@ defmodule Exec do
   `{:ok, {:exit, status}}` is the last thing a program produces; reading past
   it is an error, because there is nothing left to read from.
   """
-  @spec read(conn()) :: {:ok, event()} | {:error, :timeout}
-  @spec read(conn(), timeout()) :: {:ok, event()} | {:error, :timeout}
-  def read(conn, timeout \\ :infinity), do: Program.read(conn, timeout)
+  @spec read(t()) :: {:ok, event()} | {:error, :timeout}
+  @spec read(t(), timeout()) :: {:ok, event()} | {:error, :timeout}
+  def read(program, timeout \\ :infinity), do: Program.read(program, timeout)
 
   @doc """
   Writes to the program's standard input, or closes it with `:eof`.
@@ -105,18 +105,18 @@ defmodule Exec do
   without it the write is accepted and the data goes nowhere. A program that
   has already exited returns `{:error, reason}`.
   """
-  @spec write(conn(), iodata() | :eof) :: :ok | {:error, term()}
-  def write(conn, data), do: Program.write(conn, data)
+  @spec write(t(), iodata() | :eof) :: :ok | {:error, term()}
+  def write(program, data), do: Program.write(program, data)
 
   @doc """
   Ends the program, gently.
 
   Sends `SIGTERM`, escalating to `SIGKILL` after about five seconds, so a
-  program that ignores `SIGTERM` can take that long to die. Use `kill/2` with
+  program that ignores `SIGTERM` can take that long to die. Use `signal/2` with
   `9` when you need it gone immediately.
   """
-  @spec stop(conn()) :: :ok | {:error, term()}
-  def stop(conn), do: Program.stop(conn)
+  @spec stop(t()) :: :ok | {:error, term()}
+  def stop(program), do: Program.stop(program)
 
   @doc """
   Sends `signal` to the program.
@@ -124,13 +124,13 @@ defmodule Exec do
   `signal` is either an atom (`:sigterm`, `:sigkill`, `:sighup`) or the
   integer number. Unlike `stop/1` this is immediate — no escalation.
   """
-  @spec kill(conn(), atom() | integer()) :: :ok | {:error, term()}
-  def kill(conn, signal), do: Program.kill(conn, signal)
+  @spec signal(t(), atom() | integer()) :: :ok | {:error, term()}
+  def signal(program, signal), do: Program.kill(program, signal)
 
   @doc """
   Runs `command` to completion and returns what it printed.
 
-  `command` and `options` are handled as in `run/2`. `timeout: ms` bounds the
+  `command` and `options` are handled as in `open/2`. `timeout: ms` bounds the
   whole call rather than the gap between two chunks, so a program that prints
   continuously still times out; on expiry the program is stopped.
 
@@ -141,36 +141,36 @@ defmodule Exec do
 
   ## Examples
 
-      iex> Exec.capture("echo hi")
+      iex> Exec.run("echo hi")
       {:ok, %Exec.Output{stdout: ["hi\\n"], stderr: [], exit_status: 0}}
 
-      iex> {:ok, output} = Exec.capture("exit 3")
+      iex> {:ok, output} = Exec.run("exit 3")
       iex> output.exit_status
       3
   """
-  @spec capture(binary() | [binary()]) :: {:ok, Output.t()} | {:error, term()}
-  @spec capture(binary() | [binary()], options()) ::
+  @spec run(binary() | [binary()]) :: {:ok, Output.t()} | {:error, term()}
+  @spec run(binary() | [binary()], options()) ::
           {:ok, Output.t()} | {:error, :timeout} | {:error, term()}
-  def capture(command, options \\ []) do
-    with {:ok, conn} <- run(command, options) do
-      collect(conn, [], [], deadline(options[:timeout] || :infinity))
+  def run(command, options \\ []) do
+    with {:ok, program} <- open(command, options) do
+      collect(program, [], [], deadline(options[:timeout] || :infinity))
     end
   end
 
-  defp collect(conn, out, err, deadline) do
-    case read(conn, time_left(deadline)) do
+  defp collect(program, out, err, deadline) do
+    case read(program, time_left(deadline)) do
       {:ok, {:stdout, data}} ->
-        collect(conn, [data | out], err, deadline)
+        collect(program, [data | out], err, deadline)
 
       {:ok, {:stderr, data}} ->
-        collect(conn, out, [data | err], deadline)
+        collect(program, out, [data | err], deadline)
 
       {:ok, {:exit, status}} ->
         {:ok, %Output{stdout: Enum.reverse(out), stderr: Enum.reverse(err), exit_status: status}}
 
       {:error, :timeout} ->
         # This call started it, so nothing else is holding it.
-        _ = stop(conn)
+        _ = stop(program)
         {:error, :timeout}
     end
   end
@@ -186,7 +186,7 @@ defmodule Exec do
   @doc """
   Runs `command` and returns its output as a lazy stream.
 
-  `command` and `options` are handled as in `run/2`.
+  `command` and `options` are handled as in `open/2`.
 
   Nothing runs until iteration begins, so a stream that is never consumed
   never starts a process.
@@ -208,30 +208,30 @@ defmodule Exec do
 
   ## Errors
 
-  Unlike `capture/2` and `run/2`, which return `{:error, reason}` when the
-  command cannot be started, `stream/2` raises — a lazy stream has no
+  Unlike `run/2` and `open/2`, which return `{:error, reason}` when the
+  command cannot be started, `stream!/2` raises — a lazy stream has no
   `{:error, _}` channel to put it in.
 
   ## Examples
 
       "printf 'a\\nb\\n'"
-      |> Exec.stream()
+      |> Exec.stream!()
       |> Enum.to_list()
       #=> [{:stdout, "a\\n"}, {:stdout, "b\\n"}, {:exit_status, 0}]
 
       "tail -f /var/log/system.log"
-      |> Exec.stream()
+      |> Exec.stream!()
       |> Stream.each(&Logger.info/1)
       |> Enum.take(5)
 
   """
-  @spec stream(binary() | [binary()]) :: Enumerable.t()
-  @spec stream(binary() | [binary()], options()) :: Enumerable.t()
-  def stream(command, options \\ []) do
+  @spec stream!(binary() | [binary()]) :: Enumerable.t()
+  @spec stream!(binary() | [binary()], options()) :: Enumerable.t()
+  def stream!(command, options \\ []) do
     Stream.resource(
       fn ->
-        case run(command, options) do
-          {:ok, conn} -> {conn, "", ""}
+        case open(command, options) do
+          {:ok, program} -> {program, "", ""}
           {:error, reason} -> raise "could not start the command: #{inspect(reason)}"
         end
       end,
@@ -242,15 +242,15 @@ defmodule Exec do
 
   defp stream_next(:done), do: {:halt, :done}
 
-  defp stream_next({conn, out, err}) do
-    case read(conn) do
+  defp stream_next({program, out, err}) do
+    case read(program) do
       {:ok, {:stdout, data}} ->
         {lines, partial} = split_lines(out <> data)
-        {Enum.map(lines, &{:stdout, &1}), {conn, partial, err}}
+        {Enum.map(lines, &{:stdout, &1}), {program, partial, err}}
 
       {:ok, {:stderr, data}} ->
         {lines, partial} = split_lines(err <> data)
-        {Enum.map(lines, &{:stderr, &1}), {conn, out, partial}}
+        {Enum.map(lines, &{:stderr, &1}), {program, out, partial}}
 
       {:ok, {:exit, status}} ->
         {flush(:stdout, out) ++ flush(:stderr, err) ++ [{:exit_status, status}], :done}
@@ -259,7 +259,7 @@ defmodule Exec do
 
   # Runs on halt, exhaustion and exception alike.
   defp stream_teardown(:done), do: :ok
-  defp stream_teardown({conn, _out, _err}), do: stop(conn)
+  defp stream_teardown({program, _out, _err}), do: stop(program)
 
   # Output arrives in chunks, not lines, and one line can span two chunks, so
   # the trailing partial is returned to prepend to the next chunk.
