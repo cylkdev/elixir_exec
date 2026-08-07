@@ -226,9 +226,19 @@ COPY --chown=app:app .formatter.exs .credo.exs .dialyzer-ignore.exs ./
 
 # `mix docs` renders README.md into the generated documentation, because
 # mix.exs names it in the `extras:` key of its `docs` configuration. Without
-# this line ex_doc raises File.read! on a missing /app/README.md, and the
+# README.md here, ex_doc raises File.read! on a missing /app/README.md and the
 # documentation build cannot run inside the image at all.
-COPY --chown=app:app README.md ./
+#
+# mix.exs also names README.md and LICENSE in the `files:` key of its `package`
+# configuration, and `mix hex.build` refuses to package the project unless every
+# file that key names is present. LICENSE is copied for that reason alone; no
+# other command in this image reads it.
+COPY --chown=app:app README.md LICENSE ./
+
+# priv/ holds the shell scripts that `mix elixir_exec.setup_user` runs. No test
+# executes them, but mix.exs names priv in the same `files:` key, so
+# `mix hex.build` fails with "Missing files: priv" unless the directory is here.
+COPY --chown=app:app priv priv
 
 # Copies the repository's lib folder to /app/lib and its test folder to
 # /app/test. lib/ holds the library's source code and test/ holds its test
