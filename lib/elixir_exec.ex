@@ -78,7 +78,7 @@ defmodule ElixirExec do
   @spec run(binary() | [binary()], options()) :: {:ok, conn()} | {:error, term()}
   def run(command, options \\ []) do
     {owner, options} = Keyword.pop(options, :owner, self())
-    command = command |> normalize_command() |> resolve_command()
+    command = normalize_command(command)
     ConnectionSupervisor.start_supervised_connection(command, owner, options)
   end
 
@@ -275,8 +275,26 @@ defmodule ElixirExec do
   # (exec.erl:1356); anything else raises function_clause inside the :exec
   # singleton, which is VM-wide and would take every other running program with
   # it.
-  defp normalize_command(command) when is_list(command), do: Enum.map(command, &to_string/1)
-  defp normalize_command(command), do: to_string(command)
+  defp normalize_command(command) when is_list(command) do
+    command |> Enum.map(&to_string/1) |> resolve_command()
+  end
+
+  # A string is a shell script, so something has to interpret it. Left to
+  # itself erlexec passes the string to $SHELL, which makes the process tree
+  # depend on the machine: zsh and bash replace themselves when the script is a
+  # single simple command, while dash -- /bin/sh on Debian -- forks and runs the
+  # program as a child. That difference decides whether the process this library
+  # tracks is the program or only its parent, and with it whether stop/1 and the
+  # lifetime guarantee mean anything. Naming /bin/sh here settles it the same way
+  # everywhere, as System.shell/2 does.
+  #
+  # An empty command is passed through unwrapped: erlexec rejects an empty
+  # command itself (exec.cpp:401, "empty command provided"), but that check
+  # inspects the first element of the argv it receives, and ["/bin/sh", "-c",
+  # ""] is a three-element, non-empty argv. Wrapping "" would silently turn a
+  # caller error into a program that runs and exits 0.
+  defp normalize_command(""), do: ""
+  defp normalize_command(command), do: ["/bin/sh", "-c", to_string(command)]
 
   # execve does not search PATH, so a bare name in list form is resolved here.
   # A name containing "/" is already a path; an unresolvable one is left alone

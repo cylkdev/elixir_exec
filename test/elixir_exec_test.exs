@@ -224,6 +224,30 @@ defmodule ElixirExecTest do
     end
   end
 
+  describe "process lifetime of shell commands" do
+    # A string command is interpreted by a shell, and a shell may run the
+    # program as a child rather than becoming it. These tests pin the outcome
+    # the caller cares about -- the program is gone -- rather than the
+    # mechanism, which differs between shells.
+    test "stop/1 ends the program itself, not merely the shell that started it" do
+      token = unique_token()
+      {:ok, conn} = ElixirExec.run("sleep #{token}")
+
+      assert await_os_process(token, :present)
+      assert ElixirExec.stop(conn) === :ok
+      assert await_os_process(token, :absent)
+    end
+
+    test "kill/2 reaches the program itself" do
+      token = unique_token()
+      {:ok, conn} = ElixirExec.run("sleep #{token}")
+
+      assert await_os_process(token, :present)
+      assert ElixirExec.kill(conn, 9) === :ok
+      assert await_os_process(token, :absent)
+    end
+  end
+
   # A fractional argument `sleep` accepts, unique per test, so one test's
   # program is never confused with another's or with a stray from an earlier
   # run. 300 seconds is far longer than any poll below, so a program going

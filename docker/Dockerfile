@@ -118,21 +118,17 @@ RUN chown app:app /app
 # is started. Nothing after this line runs as `root`.
 USER app
 
-# ENV sets an environment variable that exists inside the finished container and
-# can be read by the programs running in it.
-#
-# The variable set here is named SHELL. It is unrelated to the SHELL instruction
-# near the top of this file, despite the shared word: that instruction chose
-# which program executes RUN lines during the build and has no effect once the
-# build finishes. This is an ordinary environment variable, and it matters
-# because erlexec reads it at run time to decide which shell will interpret a
-# command that was given as a single string, such as
-# `ElixirExec.run("echo hi | wc -l")`.
-#
-# It is set explicitly because otherwise erlexec would inherit whatever the
-# surrounding machine happens to use: zsh on a Mac, bash on most servers. Those
-# two shells disagree on behaviour that test/elixir_exec_test.exs checks. On
-# Debian, /bin/sh is dash, a small strict shell.
+# ENV SHELL is still required here, but no longer for the reason it originally
+# was. It used to matter because erlexec decided which shell interpreted a
+# string command by reading $SHELL, and leaving that to the surrounding machine
+# made the tests behave differently on a Mac than on Debian. The library now
+# names /bin/sh itself when it builds the command, so that reason is gone --
+# but exec-port, the C++ program erlexec's OTP application starts, refuses to
+# start at all unless $SHELL is set to something non-empty (exec.cpp:626-628,
+# "SHELL environment variable not set!"), whether or not any command it runs is
+# ever a string. Removing this line was tried while fixing the shell-forking
+# defect this Dockerfile's tests exist to catch, and it broke every test by
+# preventing the erlexec application from starting in the first place.
 ENV SHELL=/bin/sh
 
 # MIX_ENV tells Elixir which of its three build environments to use: dev, test

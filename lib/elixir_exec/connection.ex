@@ -167,11 +167,28 @@ defmodule ElixirExec.Connection do
     stdout? = Keyword.get(opts, :stdout, true)
     stderr? = Keyword.get(opts, :stderr, true)
 
-    proplist = [:link]
+    # :link is what makes erlexec reap the program when this process dies; see
+    # the module comment above.
+    #
+    # {:group, 0} puts the program in a new process group of its own, and
+    # :kill_group makes erlexec signal that whole group rather than the single
+    # pid it tracked. Both are needed, and only together.
+    #
+    # A string command is interpreted by /bin/sh, which may run the program as a
+    # child rather than becoming it. Signalling only the tracked pid then kills
+    # the shell and leaves the program orphaned to init -- so stop/1 returns :ok
+    # while the program keeps running. Signalling the group reaches the program
+    # whichever shape the shell chose.
+    #
+    # :kill_group without {:group, 0} would signal erlexec's own process group,
+    # killing the VM-wide exec-port and every other running program with it.
+    proplist = [:link, :kill_group, {:group, 0}]
     proplist = if stdin?, do: [:stdin | proplist], else: proplist
     proplist = if stdout?, do: [:stdout | proplist], else: proplist
     proplist = if stderr?, do: [:stderr | proplist], else: proplist
 
+    # :group is deliberately absent: this module sets it, and a caller
+    # overriding it would silently break the lifetime guarantee above.
     run_opts =
       Keyword.take(opts, [
         :executable,
