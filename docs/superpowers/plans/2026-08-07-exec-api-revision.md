@@ -1279,15 +1279,19 @@ Pure rename. No test changes — if a test needs editing, something behavioural 
 
 - [ ] **Step 1: Rename in `lib/exec.ex`**
 
+> #### Use `perl`, not `sed`
+>
+> macOS ships BSD `sed`, which does **not** support the `\b` word-boundary escape. It does not error on it — it silently matches nothing, so every substitution below would appear to succeed while changing no files. This was observed for real in Task 1. `perl -pi -e` honours `\b` on every platform. Verify with `grep` afterwards regardless.
+
 ```bash
-sed -i '' \
-  -e 's/\bcollect\b/read_until_exit/g' \
-  -e 's/\bstream_next\b/emit_lines/g' \
-  -e 's/\bstream_teardown\b/stop_unless_exited/g' \
-  -e 's/\bsplit_lines\b/split_complete_lines/g' \
-  -e 's/\bnormalize_command\b/command_to_binaries/g' \
-  -e 's/\bresolve_command\b/resolve_executable_path/g' \
-  -e 's/\btime_left\b/remaining_timeout/g' \
+perl -pi \
+  -e 's/\bcollect\b/read_until_exit/g;' \
+  -e 's/\bstream_next\b/emit_lines/g;' \
+  -e 's/\bstream_teardown\b/stop_unless_exited/g;' \
+  -e 's/\bsplit_lines\b/split_complete_lines/g;' \
+  -e 's/\bnormalize_command\b/command_to_binaries/g;' \
+  -e 's/\bresolve_command\b/resolve_executable_path/g;' \
+  -e 's/\btime_left\b/remaining_timeout/g;' \
   lib/exec.ex
 ```
 
@@ -1299,10 +1303,10 @@ sed -i '' \
 - [ ] **Step 2: Rename in `lib/exec/program.ex`**
 
 ```bash
-sed -i '' \
-  -e 's/\brecord\b/deliver_or_queue/g' \
-  -e 's/\bread_timer\b/start_read_timer/g' \
-  -e 's/\bexec_run_options\b/build_exec_options/g' \
+perl -pi \
+  -e 's/\brecord\b/deliver_or_queue/g;' \
+  -e 's/\bread_timer\b/start_read_timer/g;' \
+  -e 's/\bexec_run_options\b/build_exec_options/g;' \
   lib/exec/program.ex
 ```
 
