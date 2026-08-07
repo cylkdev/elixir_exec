@@ -352,8 +352,9 @@ defmodule Exec do
          }}
 
       {:error, :timeout} ->
-        # This call started it, so nothing else is holding it.
-        _ = stop(program)
+        # This call started it and nothing else is holding it, and there is
+        # nothing left to read, so the program's process goes too.
+        _ = Program.shutdown(program)
         {:error, :timeout}
     end
   end
@@ -443,7 +444,9 @@ defmodule Exec do
 
   # Runs on halt, exhaustion and exception alike.
   defp stop_unless_exited(:done), do: :ok
-  defp stop_unless_exited({program, _out, _err}), do: stop(program)
+  # The stream owns the program, and a halted stream will never read again, so
+  # the program's process is terminated rather than left holding its queue.
+  defp stop_unless_exited({program, _out, _err}), do: Program.shutdown(program)
 
   # Output arrives in chunks, not lines, and one line can span two chunks, so
   # the trailing partial is returned to prepend to the next chunk.

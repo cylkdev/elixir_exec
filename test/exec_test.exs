@@ -253,6 +253,34 @@ defmodule ExecTest do
     end
   end
 
+  describe "process cleanup" do
+    # A spent program must not leave its process behind: it would hold a monitor
+    # and an unread queue for as long as its owner lived.
+    test "a run/2 timeout leaves no program process behind" do
+      before = program_count()
+
+      assert Exec.run("sleep 30", timeout: 200) === {:error, :timeout}
+
+      assert await_program_count(before)
+    end
+
+    test "a halted stream!/2 leaves no program process behind" do
+      before = program_count()
+
+      assert "echo ready; sleep 30" |> Exec.stream!() |> Enum.take(1) === [{:stdout, "ready\n"}]
+
+      assert await_program_count(before)
+    end
+
+    test "a completed run/2 leaves no program process behind" do
+      before = program_count()
+
+      assert {:ok, %Result{stdout: "hi\n"}} = Exec.run("echo hi")
+
+      assert await_program_count(before)
+    end
+  end
+
   describe "process lifetime of shell commands" do
     # A string command is interpreted by a shell, and a shell may run the
     # program as a child rather than becoming it. These tests pin the outcome
@@ -321,6 +349,25 @@ defmodule ExecTest do
   # run. 300 seconds is far longer than any poll below, so a program going
   # missing means it was reaped and never that it finished on its own.
   defp unique_token, do: "300.0#{System.unique_integer([:positive])}"
+
+  defp program_count, do: Exec.ProgramSupervisor |> DynamicSupervisor.which_children() |> length()
+
+  # A supervisor drops a child when it handles that child's exit, which is a
+  # message behind the call that caused it.
+  defp await_program_count(expected, attempts \\ 100)
+
+  defp await_program_count(expected, 0) do
+    flunk("the program count never returned to #{expected}; it is #{program_count()}")
+  end
+
+  defp await_program_count(expected, attempts) do
+    if program_count() === expected do
+      true
+    else
+      Process.sleep(50)
+      await_program_count(expected, attempts - 1)
+    end
+  end
 
   defp await_os_process(token, expected, attempts \\ 60)
 

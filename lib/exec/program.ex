@@ -55,6 +55,27 @@ defmodule Exec.Program do
 
   def stop(conn), do: GenServer.call(conn, :stop)
 
+  # stop/1 ends the OS program and leaves this process alive, because the caller
+  # still has the remaining events -- including the exit -- to read. shutdown/1
+  # is for a caller that is done reading: run/2 after its timeout, a halted
+  # stream!/2. Without it the exit arrives with no reader, gets queued, and this
+  # process sits holding a monitor and a queue nobody will ever read until the
+  # owner dies -- unbounded accumulation under a long-lived owner.
+  #
+  # Terminating is safe: the controller link reaps the OS program however this
+  # process goes (see the module comment above), so the stop below is a
+  # courtesy, not the mechanism.
+  #
+  # Both calls may find the process already gone -- it stops itself on the exit
+  # event, which can land between the caller's decision and this call -- so a
+  # :noproc exit is the expected outcome, not an error.
+  def shutdown(conn) do
+    _ = stop(conn)
+    GenServer.stop(conn, :normal)
+  catch
+    :exit, _reason -> :ok
+  end
+
   def kill(conn, signal), do: GenServer.call(conn, {:kill, signal})
 
   # The owner monitor is never demonitored: this process stops on that DOWN,
