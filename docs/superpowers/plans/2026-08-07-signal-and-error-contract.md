@@ -121,6 +121,164 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 
 ---
 
+### Task 6: Pin erlexec to the current release (runs before Task 2)
+
+Numbered out of sequence because it was added after the plan was written. **Execution order is 1 → 6 → 2 → 3 → 4 → 5.** It must precede Task 2, because Tasks 2, 3 and 4 all rest on measurements of erlexec's behaviour, and this task changes which erlexec those measurements describe.
+
+**Why.** `mix.exs` asks for `{:erlexec, "~> 2.3"}` and `mix.lock` pins **2.3.0 — a retired release**. So are 2.3.1, 2.3.2 and 2.3.3. Only **2.3.4** (2026-06-12) is current. Every measurement in this plan, and every erlexec line number cited in this repository's source and documentation, was taken against a retired version.
+
+The standalone bug reproduction at `../erlexec_signal_loss` already runs against 2.3.4 and still shows the defect there — 8/100 on Linux, 99/100 on macOS — so the workaround in Task 4 remains warranted. This task brings this library onto the same version so the two agree.
+
+**Files:**
+- Modify: `mix.exs`, `mix.lock`
+- Modify: `lib/exec.ex`, `lib/exec/program.ex`, `docker/Dockerfile` (line citations only)
+- Modify: `docs/superpowers/specs/2026-08-07-signal-and-error-contract-design.md` (line citations only)
+
+**Interfaces:**
+- Consumes: nothing.
+- Produces: `:erlexec` 2.3.4 for every later task. No API change.
+
+- [ ] **Step 1: Pin the dependency**
+
+In `mix.exs`, change the dependency from a range to an exact version, so this library and the bug reproduction cannot drift apart again:
+
+```elixir
+      {:erlexec, "== 2.3.4"},
+```
+
+Then update the lock and confirm it took:
+
+```bash
+mix deps.update erlexec
+grep -A0 '"erlexec"' mix.lock
+```
+
+Expected: the lock names `2.3.4`.
+
+- [ ] **Step 2: Pin the bug reproduction to the same version**
+
+The reproduction project at `/Users/kurthogarth/Documents/GitHub/erlexec_signal_loss` is a separate git repository. Make the same change there — `{:erlexec, "== 2.3.4"}` in its `mix.exs`, then `mix deps.update erlexec` — and commit it there separately with the message:
+
+```
+build: pin erlexec to 2.3.4 exactly
+
+The reported defect and the library that works around it must be measured
+against the same release.
+```
+
+Do not stage that project's changes into this repository.
+
+- [ ] **Step 3: Rebuild the image and run every gate**
+
+A dependency change invalidates the Docker layer that compiles deps and builds the Dialyzer PLTs, so this rebuild is slow. Allow the full 900000 ms.
+
+```bash
+./docker/test
+./docker/test mix format --check-formatted
+./docker/test mix credo --strict
+./docker/test mix dialyzer
+./docker/test mix docs
+./docker/test mix hex.build
+```
+
+Expected: 6 doctests, 52 tests, 0 failures, and all six clean.
+
+**If any test fails, stop and report it rather than adjusting the test.** A failure here means 2.3.4 changed behaviour this library documents, which is a finding in its own right and needs a decision, not a patch.
+
+- [ ] **Step 4: Re-verify the behaviours this library documents**
+
+Several documented claims rest on erlexec's behaviour and were measured against 2.3.0. Confirm each still holds on 2.3.4 and record what you observe:
+
+```bash
+./docker/test mix run -e '
+  Process.flag(:trap_exit, true)
+  IO.puts("empty command:      #{inspect(Exec.run(""))}")
+  {:ok, r} = Exec.run(["/nonexistent/nope"])
+  IO.puts("missing executable: exit_status=#{inspect(r.exit_status)} stderr=#{inspect(r.stderr)}")
+  {:ok, p} = Exec.open("echo hi"); Process.sleep(500)
+  IO.puts("write after exit:   #{inspect(Exec.write(p, "x"))}")
+  IO.puts("stop after exit:    #{inspect(Exec.stop(p))}")
+  {:ok, q} = Exec.open("sleep 300.99"); Process.sleep(300)
+  IO.puts("signal sigterm:     #{inspect(Exec.signal(q, :sigterm))} then #{inspect(Exec.read(q))}")'
+```
+
+Expected, from the 2.3.0 measurements — report any difference rather than accepting it silently:
+
+| Check | Expected on 2.3.0 |
+|---|---|
+| empty command | `{:error, :empty_command}` |
+| missing executable | `exit_status: 1`, stderr containing `No such file or directory` |
+| write after exit | `:ok` (Task 3 changes this) |
+| stop after exit | `{:error, ~c"pid not alive"}` (Task 3 changes this) |
+| signal `:sigterm` | `:ok`, then `{:ok, {:exit, {:signal, :sigterm}}}` |
+
+- [ ] **Step 5: Correct the erlexec line citations**
+
+This repository cites erlexec source lines in code comments and documentation. Two are known to have moved between 2.3.0 and 2.3.4, and the others must be checked rather than assumed. The vendored source is at `deps/erlexec/` after Step 1.
+
+Known drift:
+
+| Citation | 2.3.0 | 2.3.4 |
+|---|---|---|
+| `SHELL` check in `c_src/exec.cpp` | 626 | **627** |
+| `signal_to_int/1` table start in `src/exec.erl` | 811 | **816** |
+| `sigaction(SIGINT…)` in `c_src/exec.cpp` | 152-155 | 152-155 (unchanged) |
+
+Find every citation and verify each against the vendored source:
+
+```bash
+grep -rn 'exec\.erl:[0-9]\|exec\.cpp:[0-9]\|exec_impl\.cpp:[0-9]' lib/ docs/ README.md docker/
+```
+
+The ones in `lib/exec/program.ex`'s module comment (`exec.erl:337`, `:1204`, `:1223`, `:1327`, `:1219-1226`) and in `lib/exec.ex` (`exec.erl:1356`, `exec.cpp:401`) predate this plan and were never re-checked. For each, open the cited file at the cited line and confirm it still says what the comment claims. Correct the number where it has moved; if the code it referred to has been restructured such that no single line carries the claim, say so in your report rather than inventing a line.
+
+Update the citations in `docker/Dockerfile` and in `docs/superpowers/specs/2026-08-07-signal-and-error-contract-design.md` too.
+
+- [ ] **Step 6: Confirm the two facts Tasks 2 and 4 depend on still hold**
+
+Task 2 exists because erlexec's signal table lacks `:sigusr1`/`:sigusr2` and uses Linux numbers. Task 4 exists because exec-port swallows four signals in the spawn window. Confirm both on 2.3.4:
+
+```bash
+grep -c 'sigusr' deps/erlexec/src/exec.erl
+```
+Expected: `0` — the table still has no `sigusr1` or `sigusr2` entry.
+
+```bash
+./docker/test mix run -e '
+  arms = [:sigterm, :sigquit, :sigkill]
+  res = Enum.reduce(1..150, Map.new(arms, &{&1, %{}}), fn i, acc ->
+    sig = Enum.at(arms, rem(i, 3))
+    {:ok, p} = Exec.open(["sleep", "300.#{:erlang.unique_integer([:positive])}"])
+    :ok = Exec.signal(p, sig)
+    ev = case Exec.read(p, 3000) do
+      {:ok, {:exit, _}} -> :delivered
+      {:error, :timeout} -> :LOST
+    end
+    update_in(acc, [sig], &Map.update(&1, ev, 1, fn n -> n + 1 end))
+  end)
+  for a <- arms, do: IO.puts("#{a}: #{inspect(res[a])}")'
+```
+
+Expected: `sigterm` shows losses; `sigquit` and `sigkill` show none. If `sigterm` shows zero losses on 2.3.4, **stop and report it** — the defect may have been fixed upstream, which would make Task 4 unnecessary and change what the bug report should say.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add mix.exs mix.lock lib docs docker
+git commit -m "build: pin erlexec to 2.3.4, the current release
+
+mix.lock held 2.3.0, which is retired, as are 2.3.1 through 2.3.3. Every
+measurement in this library and every erlexec line number it cites was taken
+against a retired version. Pinned exactly so this library and the bug
+reproduction at ../erlexec_signal_loss cannot drift apart.
+
+Corrects the erlexec line citations that moved between the two releases.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
 ### Task 2: `Exec` owns the signal table
 
 Today `Exec.signal/2` hands its argument straight to `:exec.kill/2`, which calls erlexec's `signal_to_int/1`. That function raises `function_clause` on any name it does not know — **inside `Exec.Program`**, whose link to erlexec's controller then kills the running program and exits the caller. A typo destroys the thing it was meant to signal.
