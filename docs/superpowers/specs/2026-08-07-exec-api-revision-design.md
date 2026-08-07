@@ -391,9 +391,13 @@ Measured in the container:
 The fix has two parts, both required:
 
 1. **The library names the shell.** A string command becomes `["/bin/sh", "-c", cmd]`,
-   built by the library and passed to erlexec as list form, so `$SHELL` is never
-   consulted and the process tree is identical on every machine. `System.shell/2` does
-   the same.
+   built by the library and passed to erlexec as list form, so the process tree is
+   identical on every machine regardless of `$SHELL`. `System.shell/2` does the same.
+
+   An empty command is the one exception: it is passed through unwrapped. erlexec's
+   own empty-command guard inspects the *first* argv element, so wrapping `""` into
+   `["/bin/sh", "-c", ""]` would make that guard stop firing and turn a documented
+   caller error into a shell that runs nothing and exits `0`.
 2. **The program runs in its own process group.** `{:group, 0}` creates the group and
    `:kill_group` makes erlexec signal it rather than one pid, so a signal reaches the
    program whichever shape the shell chose.
@@ -405,6 +409,40 @@ correct together.
 **Consequence for the API:** `:group` is no longer a forwardable option. The library
 owns it, and a caller overriding it would silently restore the defect. It is removed
 from the forwarded list in Part 2 and from the `t:options/0` documentation in Part 3.
+
+### `$SHELL` must be set in the environment, for a different reason
+
+An earlier draft of this section claimed that pinning `/bin/sh` in the library meant
+`$SHELL` was no longer read at all. That is wrong, and the container proved it:
+removing `ENV SHELL` from the image stopped the whole application from starting.
+
+`exec-port`, the C++ program erlexec supervises, refuses to start when `$SHELL` is
+unset or empty (`deps/erlexec/c_src/exec.cpp:626`):
+
+```cpp
+} else if (!getenv("SHELL") || strcmp(getenv("SHELL"), "") == 0) {
+    DEBUG(true, "SHELL environment variable not set!");
+    exit(4);
+}
+```
+
+The failure is total and unrelated to command interpretation:
+
+```
+SHELL environment variable not set! [exec.cpp:627]
+Application erlexec exited: :exec_app.start(:normal, []) returned an error:
+  shutdown: failed to start child: :exec ** (EXIT) {:port_exited_with_status, 4}
+```
+
+So there are two separate facts, and the documentation must not conflate them:
+
+1. `$SHELL` no longer decides **which shell interprets a string command** — the
+   library names `/bin/sh` itself.
+2. `$SHELL` must still be **set to something non-empty** for erlexec to start at all.
+
+Point 2 is a deployment hazard worth documenting in the README: a systemd unit, a
+container, or a cron environment that does not set `SHELL` will fail to boot the
+application, with an error that names neither this library nor the caller's code.
 
 **Consequence for the documentation:** Part 3's lifetime text is now true rather than
 aspirational, and it must say what a string command actually runs — `/bin/sh -c` — and
