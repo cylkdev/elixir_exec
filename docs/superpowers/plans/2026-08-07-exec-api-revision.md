@@ -57,6 +57,7 @@ This task comes first so that a failure in it is a Dockerfile problem and never 
 - Create: `docker/fixtures/ignores-sigterm`
 - Create: `docker/test`
 - Create: `.dockerignore` (repository root — Docker reads it only from the build context root, so it cannot live in `docker/`)
+- Modify: `mix.exs` (one dependency line)
 - Test: `test/elixir_exec_test.exs` (one test added; the file is renamed in Task 1)
 
 **Interfaces:**
@@ -66,6 +67,37 @@ This task comes first so that a failure in it is a Dockerfile problem and never 
 - [ ] **Step 1: Write `docker/Dockerfile`**
 
 Use the file agreed in the design session. Every instruction is commented for a reader who does not already know Docker, and every path is named literally. Base image `hexpm/elixir:1.18.4-erlang-27.3.4-debian-bookworm-20250428-slim`; installs `build-essential` and `procps`; creates and switches to an unprivileged user `app`; sets `ENV SHELL=/bin/sh` and `ENV MIX_ENV=test`; copies `mix.exs` and `mix.lock` and compiles dependencies *before* copying `lib` and `test`; copies `docker/fixtures` to `/usr/local/fixtures`; ends with `CMD ["mix", "test"]`.
+
+Add one instruction that was not in the design sketch, immediately after `RUN mix deps.compile`:
+
+```dockerfile
+# Builds Dialyzer's lookup tables, the PLTs, and stores them in the image.
+#
+# `mix dialyzer` cannot type-check anything until it has catalogued every
+# function in Erlang/OTP and in this project's dependencies. Building that
+# catalogue takes several minutes. Every `docker run` starts a fresh container
+# and throws away whatever the previous one wrote, so without this instruction
+# that catalogue would be rebuilt from nothing on every single run.
+#
+# Building it here instead makes it part of the image, and Docker only repeats
+# this instruction when mix.exs or mix.lock change. The paths it writes to,
+# /app/dialyzer, come from the `dialyzer:` key in mix.exs.
+#
+# It runs before lib/ is copied on purpose: the PLTs describe OTP and the
+# dependencies, never this project's own code, so copying lib/ first would only
+# make this slow step repeat whenever a source file changed.
+RUN mix dialyzer --plt
+```
+
+- [ ] **Step 1b: Make ex_doc available in the test environment**
+
+`mix.exs` currently declares `{:ex_doc, ">= 0.0.0", only: :dev, runtime: false}`. The image sets `MIX_ENV=test`, so ex_doc would not be installed and `docker/test mix docs` — used in Task 9 to catch `@doc` cross-references to renamed functions — would fail.
+
+Change that one line to match how credo and dialyxir are already declared:
+
+```elixir
+      {:ex_doc, ">= 0.0.0", only: [:dev, :test], runtime: false}
+```
 
 - [ ] **Step 2: Write `docker/fixtures/ignores-sigterm` and make it executable**
 
