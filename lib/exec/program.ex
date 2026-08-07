@@ -26,6 +26,18 @@ defmodule Exec.Program do
 
   use GenServer
 
+  # The four signals exec-port installs a handler for (exec.cpp:152-155). Their
+  # numbers are identical on Linux and Darwin because all four are below 16,
+  # which is where POSIX stops guaranteeing them.
+  @swallowable_signals [1, 2, 13, 15]
+
+  # Far longer than any observed fork-to-execve window, and short enough that no
+  # realistic program has begun meaningful work.
+  @spawn_window_ms 250
+
+  # Long enough for the execve to have completed in every observed case.
+  @resend_after_ms 50
+
   # `owner` is whoever the program belongs to. It defaults to the calling
   # process, so starting one directly needs nothing extra; going through the
   # supervisor does, because start_link then runs in the supervisor.
@@ -107,7 +119,9 @@ defmodule Exec.Program do
            owner_ref: Process.monitor(owner),
            events: :queue.new(),
            reader: nil,
-           exited?: false
+           exited?: false,
+           started_at: System.monotonic_time(:millisecond),
+           resent?: false
          }}
 
       {:error, reason} ->
@@ -159,7 +173,7 @@ defmodule Exec.Program do
   def handle_call(:stop, _from, state), do: {:reply, :exec.stop(state.os_pid), state}
 
   def handle_call({:kill, signal}, _from, state) do
-    {:reply, :exec.kill(state.os_pid, signal), state}
+    {:reply, :exec.kill(state.os_pid, signal), schedule_resend(state, signal)}
   end
 
   @impl GenServer
@@ -187,6 +201,16 @@ defmodule Exec.Program do
     GenServer.reply(from, {:error, :timeout})
     {:noreply, %{state | reader: nil}}
   end
+
+  # The program is still running 50ms after a signal that
+  # exec-port's inherited handler may have swallowed. Send it once more.
+  def handle_info({:resend, signal}, %{exited?: false} = state) do
+    _ = :exec.kill(state.os_pid, signal)
+    {:noreply, state}
+  end
+
+  # It exited in the meantime, so the first signal landed.
+  def handle_info({:resend, _signal}, state), do: {:noreply, state}
 
   # A :read_timeout with nobody waiting for it. The timer fired just as the
   # event it was bounding arrived, or a second read/2 replaced the reader and
@@ -227,6 +251,29 @@ defmodule Exec.Program do
       0 -> :ok
     end
   end
+
+  # A signal swallowed in the fork-to-execve window never reached the program, so
+  # sending it once more is the difference between the caller's instruction being
+  # carried out and being silently dropped.
+  #
+  # This cannot tell a swallowed signal from one the program deliberately
+  # ignored. A program that installs its own handler for one of these four within 250ms
+  # of starting may therefore see it twice. That is
+  # accepted against a signal being lost outright roughly one time in eleven.
+  #
+  # Delete this once erlexec resets the child's signal dispositions before
+  # execve; the reproduction and the proposed fix are in ../erlexec_signal_loss.
+  defp schedule_resend(%{resent?: false} = state, signal)
+       when signal in @swallowable_signals do
+    if System.monotonic_time(:millisecond) - state.started_at <= @spawn_window_ms do
+      Process.send_after(self(), {:resend, signal}, @resend_after_ms)
+      %{state | resent?: true}
+    else
+      state
+    end
+  end
+
+  defp schedule_resend(state, _signal), do: state
 
   defp build_exec_options(opts) do
     stdin? = Keyword.get(opts, :stdin, true)

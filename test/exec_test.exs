@@ -261,6 +261,32 @@ defmodule ExecTest do
     end
   end
 
+  describe "signals sent immediately after open/2" do
+    # erlexec's port program installs handlers for SIGHUP, SIGINT, SIGPIPE and
+    # SIGTERM, and a forked child inherits them until execve replaces the image.
+    # A signal in those four sent in that window is swallowed. Measured at
+    # roughly nine losses in a hundred before the resend below.
+    #
+    # 100 iterations asserting zero losses, rather than sampling a rate: at a
+    # loss probability of 0.09 a regression appears with probability above
+    # 1 - 0.91^100, which is greater than 0.9999, while a working resend gives
+    # zero on any machine.
+    test "are not lost" do
+      losses =
+        Enum.count(1..100, fn _ ->
+          {:ok, program} = Exec.open(["sleep", unique_token()])
+          :ok = Exec.signal(program, :sigterm)
+
+          case Exec.read(program, 3000) do
+            {:ok, {:exit, _}} -> false
+            {:error, :timeout} -> true
+          end
+        end)
+
+      assert losses === 0
+    end
+  end
+
   describe "run/2" do
     test "returns stdout, stderr and the exit status" do
       assert Exec.run("echo out; echo err 1>&2") ===
