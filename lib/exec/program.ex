@@ -56,10 +56,21 @@ defmodule Exec.Program do
   # event, which can land between the caller's decision and this call -- so a
   # :noproc exit is the expected outcome, not an error.
   def shutdown(conn) do
-    _ = stop(conn)
-    GenServer.stop(conn, :normal)
-  catch
-    :exit, _reason -> :ok
+    # Only the stop is allowed to fail quietly. Wrapping the termination in the
+    # same catch would mean a failed stop skips it, which silently restores the
+    # leak this function exists to prevent.
+    _ =
+      try do
+        stop(conn)
+      catch
+        :exit, _reason -> :ok
+      end
+
+    try do
+      GenServer.stop(conn, :normal)
+    catch
+      :exit, _reason -> :ok
+    end
   end
 
   def kill(conn, signal), do: GenServer.call(conn, {:kill, signal})

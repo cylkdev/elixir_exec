@@ -470,7 +470,7 @@ defmodule ExecTest do
   end
 
   defp await_os_process(token, expected, attempts) do
-    {out, _status} = System.cmd("pgrep", ["-f", "sleep #{token}"], stderr_to_stdout: true)
+    {out, _status} = System.cmd("pgrep", ["-f", "sleep #{token}$"], stderr_to_stdout: true)
     running? = String.trim(out) !== ""
 
     if running? === (expected === :present) do
