@@ -76,6 +76,23 @@ defmodule Exec do
   That `"Terminated\\n"` comes from the shell, not from the program. A list
   command has no shell to write it.
 
+  ## Signals sent immediately after starting
+
+  `SIGHUP`, `SIGINT`, `SIGPIPE` and `SIGTERM` can be lost if they are sent in
+  the moment between a program being created and its beginning to run. The
+  runner's own port program installs handlers for those four, and a newly
+  created program inherits them until it replaces itself with the command being
+  run, so a signal arriving in that gap is absorbed by an inherited handler
+  instead of reaching the program.
+
+  This module sends such a signal a second time, once, if the program is still
+  running shortly afterwards. A program that installs its own handler for one of
+  those four signals within the first quarter-second may therefore observe it
+  twice.
+
+  `stop/1` is unaffected: it escalates to `SIGKILL`, which cannot be absorbed by
+  any handler. Signals outside those four are unaffected for the same reason.
+
   ## Failure to launch
 
   A missing executable, a permission failure and an unreachable `:cd` are
@@ -307,13 +324,17 @@ defmodule Exec do
   @doc """
   Writes `data` to the standard input of `program`, or closes it with `:eof`.
 
-  Returns `{:error, reason}` if the program has already exited. A program
-  started with `stdin: false` accepts the write and discards it.
+  A program started with `stdin: false` accepts the write and discards it.
 
   ## Examples
 
       :ok = Exec.write(program, "hello\\n")
       :ok = Exec.write(program, :eof)
+
+  ## Errors
+
+    * `{:error, :not_running}` - the program has ended. Any output it produced
+      before ending is still readable with `read/2`.
   """
   @spec write(t(), iodata() | :eof) :: :ok | {:error, :not_running}
   def write(program, data), do: Program.write(program, data)
@@ -326,6 +347,10 @@ defmodule Exec do
   option changes that delay. `signal/2` with `:sigkill` ends it immediately.
 
   A program stopped this way reports exit status `0`, not a signal.
+
+  ## Errors
+
+    * `{:error, :not_running}` - the program had already ended.
   """
   @spec stop(t()) :: :ok | {:error, :not_running}
   def stop(program), do: Program.stop(program)
@@ -333,14 +358,32 @@ defmodule Exec do
   @doc """
   Sends `signal` to `program`.
 
-  `signal` is an atom such as `:sigterm`, `:sigkill` or `:sighup`, or the
-  integer number. Unlike `stop/1` nothing is escalated: exactly one signal is
-  sent.
+  `signal` is a name such as `:sigterm`, `:sigkill` or `:sigusr1`, or the
+  integer number. Names are resolved for the current operating system, because
+  only signals 1 to 15 have numbers POSIX guarantees: `:sigusr1` is 10 on Linux
+  and 30 on Darwin.
+
+  Unlike `stop/1` nothing is escalated: exactly one signal is sent, to the
+  program's whole process group.
+
+  A program that traps a signal is not protected from `signal/2` when its
+  command was given as a binary. The `/bin/sh -c` wrapper shares the program's
+  process group and traps nothing, so the wrapper dies and its exit is what
+  `read/2` reports. Use the list form to signal a program that handles signals
+  itself.
 
   ## Examples
 
       :ok = Exec.signal(program, :sigkill)
       :ok = Exec.signal(program, 9)
+
+  ## Errors
+
+    * `{:error, :not_running}` - the program had already ended.
+
+  Raises `ArgumentError` for a name that is not a known signal, for an integer
+  outside `0..64`, and for anything that is neither. Signal `0` is accepted: it
+  sends nothing and asks whether the program exists.
   """
   @spec signal(t(), atom() | non_neg_integer()) :: :ok | {:error, :not_running}
   def signal(program, signal), do: Program.kill(program, signal_number!(signal))
