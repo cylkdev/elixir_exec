@@ -1428,21 +1428,24 @@ Write the documentation exactly as below.
 
   ## Command forms
 
-  A command is either a binary, which a shell parses, or a list of binaries,
-  which is passed to `execve` directly with no shell involved:
+  A command is either a binary, run as `/bin/sh -c command`, or a list of
+  binaries, passed to `execve` directly with no shell involved:
 
-      Exec.run("ls -l | wc -l")   # a shell handles PATH, pipes and redirection
+      Exec.run("ls -l | wc -l")   # /bin/sh handles PATH, pipes and redirection
       Exec.run(["echo", "hi"])    # no shell, no expansion, no interpolation
 
   In list form a bare executable name is resolved against `PATH` first, so
   `["echo", "hi"]` behaves as `"echo hi"` does. A name containing `/` is used
   exactly as given.
 
+  `/bin/sh` is named explicitly rather than taken from `$SHELL`, so a binary
+  command behaves the same way on every machine.
+
   > #### Watch out {: .warning}
   >
-  > The binary form is parsed by a shell, so never pass untrusted input to it.
-  > `Exec.run("cat \#{user_input}")` runs whatever the input says. Use the list
-  > form, which does not involve a shell, whenever any part of the command comes
+  > A binary command is interpreted by a shell, so never pass untrusted input to
+  > it. `Exec.run("cat \#{user_input}")` runs whatever the input says. Use the
+  > list form, which involves no shell, whenever any part of the command comes
   > from outside the application.
 
   ## Lifetime
@@ -1452,11 +1455,33 @@ Write the documentation exactly as below.
   for `run/2`, `stream!/2` and `open/2` alike, and does not survive the VM
   itself going down.
 
+  Each program runs in a process group of its own, and `stop/1` and `signal/2`
+  act on that group. A binary command therefore takes the shell and everything
+  the shell started with it, rather than leaving the real work orphaned.
+
   The reverse does not hold: a program that fails or exits non-zero does not
   disturb the process that started it.
 
   Pass `owner: pid` to tie a program's lifetime to a process other than the
   caller.
+
+  ## Exit status of a binary command
+
+  A binary command reports the exit status of `/bin/sh`, which is not always the
+  exit status of the program inside it. A shell that ran a single program exits
+  with that program's code, but a program killed by a signal makes the shell
+  exit `128 + signal`, and the shell writes its own diagnostic to standard
+  error. Terminating `sleep 30` produces:
+
+      {:stderr, "Terminated\\n"}
+      {:exit, 143}
+
+  That `"Terminated\\n"` comes from the shell, not from the program.
+
+  List form has no shell in between, reports the program's own status as
+  `{:signal, name}`, and adds nothing to standard error:
+
+      {:exit, {:signal, :sigterm}}
 
   ## Failure to launch
 
