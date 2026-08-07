@@ -166,10 +166,16 @@ The reverse does not hold. A program that fails, exits non-zero or is killed by 
 
 ### Process groups and exit status
 
-Each program runs in a process group of its own, and `Exec.stop/1` and `Exec.signal/2` act on that whole group. A binary command therefore takes down `/bin/sh` and every program the shell started, rather than leaving the real work orphaned when the shell dies. Through those two functions a binary command and a list command report a signal identically:
+Each program runs in a process group of its own, and `Exec.stop/1` and `Exec.signal/2` act on that whole group. A binary command therefore takes down `/bin/sh` and every program the shell started, rather than leaving the real work orphaned when the shell dies. `Exec.signal/2` reports the signal identically for a binary command and a list command:
 
 ```elixir
 {:exit, {:signal, :sigterm}}
+```
+
+`Exec.stop/1` is an ordered termination rather than a raw signal, so a program stopped that way reports exit status `0`, whichever form the command took:
+
+```elixir
+{:exit, 0}
 ```
 
 A signal that arrives from outside the group behaves differently. It reaches the one program it names and no other, so an operator who runs `kill -TERM` against the inner program of `Exec.open("sleep 30")` leaves `/bin/sh` alive to reap that program, write a diagnostic of its own on standard error, and exit `128 + signal`:
@@ -179,7 +185,7 @@ A signal that arrives from outside the group behaves differently. It reaches the
 {:exit, 143}
 ```
 
-That `"Terminated\n"` is written by `/bin/sh`, not by `sleep`. A list command has no shell in it to write such a line, and reports `{:exit, {:signal, :sigterm}}` however the signal arrived.
+That `"Terminated\n"` is written by `/bin/sh`, not by `sleep`. A list command has no shell in it to write such a line: an outside signal reaches the one program that is there, so a list command reports that signal in the same `{:exit, {:signal, :sigterm}}` form whether the signal came from `Exec.signal/2` or from outside the group.
 
 ## Configuration
 
@@ -243,7 +249,7 @@ docker/test mix docs                      # HexDocs output
 docker/test mix hex.build                 # the Hex package
 ```
 
-`mix test` run directly on a development machine fails. `test/exec_test.exs` starts `/usr/local/fixtures/ignores-sigterm`, a program that exists only inside the image, and other tests call `pgrep`, which macOS and Debian do not agree on. The image exists because this suite starts real operating system programs and inspects what they print and how they end, so those programs have to be present and have to behave the same way from one run to the next. `docker/Dockerfile` declares which programs the suite needs rather than trusting whatever the machine running the tests happens to have installed.
+`mix test` run directly on a development machine fails. `test/exec_test.exs` starts `/usr/local/fixtures/ignores-sigterm`, a program that exists only inside the image, and four further tests reach `pgrep`, which macOS and Debian do not agree on, through a shared helper. The image exists because this suite starts real operating system programs and inspects what they print and how they end, so those programs have to be present and have to behave the same way from one run to the next. `docker/Dockerfile` declares which programs the suite needs rather than trusting whatever the machine running the tests happens to have installed.
 
 The files that make that work:
 

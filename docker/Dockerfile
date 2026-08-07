@@ -65,11 +65,17 @@ SHELL ["/bin/sh", "-e", "-c"]
 #                    instruction fails and the image does not build.
 #
 #   procps           The `pgrep` command, which searches the operating system's
-#                    list of running programs by name. Three tests in
-#                    test/exec_test.exs shell out to `pgrep` to confirm
-#                    that a program really disappeared from the operating
-#                    system, rather than trusting this library's own report that
-#                    it stopped that program.
+#                    list of running programs by name. Four tests in
+#                    test/exec_test.exs reach `pgrep` through their shared
+#                    await_os_process/3 helper, rather than calling it directly,
+#                    to confirm that a program really appeared in and then
+#                    disappeared from the operating system's process list --
+#                    rather than trusting this library's own report that it
+#                    started or stopped that program. The four are "a program
+#                    does not outlive its own process, even killed outright",
+#                    "a program does not outlive the supervision tree that owns
+#                    it", "stop/1 ends the program itself, not merely the shell
+#                    that started it" and "signal/2 reaches the program itself".
 #
 # The three commands do this: `apt-get update` downloads Debian's catalogue of
 # available packages into the folder /var/lib/apt/lists; `apt-get install` reads

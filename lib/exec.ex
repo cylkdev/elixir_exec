@@ -56,10 +56,13 @@ defmodule Exec do
 
   ## Exit status
 
-  `stop/1` and `signal/2` signal the program's whole process group, so a
-  binary command and a list command report a signal the same way:
+  `signal/2` signals the program's whole process group, so a binary command and
+  a list command report a signal the same way:
 
       {:exit, {:signal, :sigterm}}
+
+  `stop/1` is an ordered termination rather than a raw signal, and reports exit
+  status `0` whichever form the command took.
 
   A signal that arrives from outside that group is different. It reaches only
   the program, leaving `/bin/sh` to reap it and exit `128 + signal` with a
