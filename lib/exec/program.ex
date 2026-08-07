@@ -189,21 +189,7 @@ defmodule Exec.Program do
 
     # :group is deliberately absent: this module sets it, and a caller
     # overriding it would silently break the lifetime guarantee above.
-    run_opts =
-      Keyword.take(opts, [
-        :executable,
-        :cd,
-        :env,
-        :kill,
-        :kill_timeout,
-        :user,
-        :nice,
-        :success_exit_code,
-        :winsz,
-        :pty,
-        :capabilities,
-        :debug
-      ])
+    run_opts = Keyword.drop(opts, [:timeout, :owner, :stdin, :stdout, :stderr])
 
     proplist ++ run_opts
   end

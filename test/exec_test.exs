@@ -90,8 +90,20 @@ defmodule ExecTest do
       assert Exec.open("") === {:error, ~c"empty command provided"}
     end
 
-    test "an option the runner does not take is ignored" do
-      {:ok, program} = Exec.open("echo hi", definitely_not_an_option: 1)
+    test "an unrecognised option raises" do
+      assert_raise ArgumentError, ~r/unknown option :definitely_not_an_option/, fn ->
+        Exec.open("echo hi", definitely_not_an_option: 1)
+      end
+    end
+
+    test "an option value the runner rejects raises" do
+      assert_raise ArgumentError, ~r/invalid value for :cd/, fn ->
+        Exec.open("echo hi", cd: 12_345)
+      end
+    end
+
+    test ":timeout is accepted without being forwarded to the runner" do
+      {:ok, program} = Exec.open("echo hi", timeout: 5_000)
 
       assert Exec.read(program) === {:ok, {:stdout, "hi\n"}}
     end
@@ -144,6 +156,10 @@ defmodule ExecTest do
 
     test "an empty command is an error, not an exit status" do
       assert Exec.run("") === {:error, ~c"empty command provided"}
+    end
+
+    test "an unrecognised option raises" do
+      assert_raise ArgumentError, ~r/unknown option :nope/, fn -> Exec.run("echo hi", nope: 1) end
     end
   end
 

@@ -30,14 +30,34 @@ defmodule Exec do
 
   alias Exec.{Program, ProgramSupervisor, Result}
 
+  # Read by this module, never forwarded to :exec.run/2.
+  @own_options [:timeout, :owner, :stdin, :stdout, :stderr]
+
+  # Passed to :exec.run/2 unchanged. Documented in this module's own terms; see
+  # the `options` typedoc.
+  @forwarded_options [
+    :executable,
+    :cd,
+    :env,
+    :kill,
+    :kill_timeout,
+    :user,
+    :nice,
+    :success_exit_code,
+    :winsz,
+    :pty,
+    :capabilities,
+    :debug
+  ]
+
   @typedoc """
   Options for the command, as a keyword list.
 
   `timeout: ms` is read by `run/2` and `owner: pid` by `open/2`. Of the
   rest, these are forwarded to `:exec.run/2` unchanged: `:executable`, `:cd`,
-  `:env`, `:kill`, `:kill_timeout`, `:group`, `:user`, `:nice`,
-  `:success_exit_code`, `:winsz`, `:pty`, `:capabilities` and `:debug`. Any
-  other key is ignored.
+  `:env`, `:kill`, `:kill_timeout`, `:user`, `:nice`, `:success_exit_code`,
+  `:winsz`, `:pty`, `:capabilities` and `:debug`. `:group` is not accepted —
+  this library sets it itself. Any other key raises `ArgumentError`.
 
   `stdin: false`, `stdout: false` and `stderr: false` disconnect that stream
   from the program. All three default to `true`.
@@ -80,9 +100,30 @@ defmodule Exec do
   @spec open(binary() | [binary()]) :: {:ok, t()} | {:error, term()}
   @spec open(binary() | [binary()], options()) :: {:ok, t()} | {:error, term()}
   def open(command, options \\ []) do
+    validate_options!(options)
     {owner, options} = Keyword.pop(options, :owner, self())
     command = normalize_command(command)
-    ProgramSupervisor.start_program(command, owner, options)
+
+    case ProgramSupervisor.start_program(command, owner, options) do
+      {:ok, program} -> {:ok, program}
+      {:error, {:invalid_option, {key, value}}} -> raise ArgumentError, invalid_value(key, value)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  # A dropped option is an invisible bug: the command runs, quietly ignoring the
+  # `cd:` that was meant to place it. System.cmd/3 raises here too.
+  defp validate_options!(options) do
+    known = @own_options ++ @forwarded_options
+
+    case options |> Keyword.keys() |> Enum.find(&(&1 not in known)) do
+      nil -> :ok
+      key -> raise ArgumentError, "unknown option #{inspect(key)}"
+    end
+  end
+
+  defp invalid_value(key, value) do
+    "invalid value for #{inspect(key)}: #{inspect(value)}"
   end
 
   @doc """
