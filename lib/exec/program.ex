@@ -33,20 +33,6 @@ defmodule Exec.Program do
     GenServer.start_link(__MODULE__, {command, owner, opts})
   end
 
-  def child_spec({command, owner, opts}) do
-    %{
-      id: {__MODULE__, opts[:id] || System.unique_integer([:monotonic, :positive])},
-      start: {__MODULE__, :start_link, [command, owner, opts]},
-      restart: :transient
-    }
-  end
-
-  def child_spec(opts) do
-    {command, opts} = Keyword.pop!(opts, :command)
-    {owner, opts} = Keyword.pop!(opts, :owner)
-    child_spec({command, owner, opts})
-  end
-
   # :infinity on the call itself: the timeout is the worker's to enforce, so a
   # slow program never exits the caller and never leaves a late reply behind.
   def read(conn, timeout), do: GenServer.call(conn, {:read, timeout}, :infinity)
@@ -225,9 +211,12 @@ defmodule Exec.Program do
     proplist = if stdout?, do: [:stdout | proplist], else: proplist
     proplist = if stderr?, do: [:stderr | proplist], else: proplist
 
+    # Only the three stream flags read just above are dropped. Exec.open/2 has
+    # already taken :owner and :timeout, which never reach this module.
+    #
     # :group is deliberately absent: this module sets it, and a caller
     # overriding it would silently break the lifetime guarantee above.
-    run_opts = Keyword.drop(opts, [:timeout, :owner, :stdin, :stdout, :stderr])
+    run_opts = Keyword.drop(opts, [:stdin, :stdout, :stderr])
 
     proplist ++ run_opts
   end

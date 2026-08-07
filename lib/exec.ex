@@ -190,6 +190,8 @@ defmodule Exec do
   def open(command, options \\ []) do
     validate_options!(options)
     {owner, options} = Keyword.pop(options, :owner, self())
+    # run/2 has already read :timeout; nothing below this line has a use for it.
+    options = Keyword.delete(options, :timeout)
     command = to_argv(command)
 
     case ProgramSupervisor.start_program(command, owner, options) do
@@ -215,7 +217,15 @@ defmodule Exec do
       nil -> :ok
       key -> raise ArgumentError, "unknown option #{inspect(key)}"
     end
+
+    validate_timeout!(Keyword.get(options, :timeout, :infinity))
   end
+
+  # Checked here rather than left to the arithmetic in deadline_after/1, which
+  # would raise ArithmeticError where the documentation promises ArgumentError.
+  defp validate_timeout!(:infinity), do: :ok
+  defp validate_timeout!(timeout) when is_integer(timeout) and timeout >= 0, do: :ok
+  defp validate_timeout!(timeout), do: raise(ArgumentError, invalid_value(:timeout, timeout))
 
   defp invalid_value(key, value) do
     "invalid value for #{inspect(key)}: #{inspect(value)}"
@@ -330,8 +340,14 @@ defmodule Exec do
   @spec run(binary() | [binary()], options()) ::
           {:ok, Result.t()} | {:error, :timeout} | {:error, term()}
   def run(command, options \\ []) do
+    # Before open/2, not after: the budget the caller asked for covers starting
+    # the command as well as running it.
+    timeout = Keyword.get(options, :timeout, :infinity)
+    validate_timeout!(timeout)
+    deadline = deadline_after(timeout)
+
     with {:ok, program} <- open(command, options) do
-      read_until_exit(program, [], [], deadline_after(options[:timeout] || :infinity))
+      read_until_exit(program, [], [], deadline)
     end
   end
 

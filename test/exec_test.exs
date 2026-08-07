@@ -168,6 +168,12 @@ defmodule ExecTest do
     test "an unrecognised option raises" do
       assert_raise ArgumentError, ~r/unknown option :nope/, fn -> Exec.run("echo hi", nope: 1) end
     end
+
+    test "a :timeout that is not a number of milliseconds raises" do
+      assert_raise ArgumentError, ~r/invalid value for :timeout/, fn ->
+        Exec.run("echo hi", timeout: "5")
+      end
+    end
   end
 
   describe "stream!/2" do
