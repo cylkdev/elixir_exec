@@ -28,7 +28,7 @@ defmodule Exec do
   The guarantee does not survive the VM going down.
   """
 
-  alias Exec.{Output, Program, ProgramSupervisor}
+  alias Exec.{Program, ProgramSupervisor, Result}
 
   @typedoc """
   Options for the command, as a keyword list.
@@ -47,8 +47,11 @@ defmodule Exec do
   @typedoc "A running program. Pass it back to `read/2`, `write/2`, `stop/1` and `signal/2`."
   @opaque t :: pid()
 
-  @typedoc "One thing a program produced. `status` is a shell exit code, or `{:signal, name}`."
-  @type event :: {:stdout, binary()} | {:stderr, binary()} | {:exit, term()}
+  @typedoc "How a command ended: a shell exit code, or `{:signal, name}` if a signal killed it."
+  @type exit_status :: non_neg_integer() | {:signal, atom() | pos_integer()}
+
+  @typedoc "One thing a program produced."
+  @type event :: {:stdout, binary()} | {:stderr, binary()} | {:exit, exit_status()}
 
   @doc """
   Starts `command` and returns something to read from, write to, and stop.
@@ -134,7 +137,7 @@ defmodule Exec do
   whole call rather than the gap between two chunks, so a program that prints
   continuously still times out; on expiry the program is stopped.
 
-  Returns `{:ok, %Exec.Output{}}` whenever the command *ran* — including
+  Returns `{:ok, %Exec.Result{}}` whenever the command *ran* — including
   when it exited non-zero. A non-zero exit is a normal outcome (`grep` finding
   nothing), not an error, so the code is in the struct and you decide whether
   it matters.
@@ -142,15 +145,15 @@ defmodule Exec do
   ## Examples
 
       iex> Exec.run("echo hi")
-      {:ok, %Exec.Output{stdout: ["hi\\n"], stderr: [], exit_status: 0}}
+      {:ok, %Exec.Result{stdout: "hi\\n", stderr: "", exit_status: 0}}
 
       iex> {:ok, output} = Exec.run("exit 3")
       iex> output.exit_status
       3
   """
-  @spec run(binary() | [binary()]) :: {:ok, Output.t()} | {:error, term()}
+  @spec run(binary() | [binary()]) :: {:ok, Result.t()} | {:error, term()}
   @spec run(binary() | [binary()], options()) ::
-          {:ok, Output.t()} | {:error, :timeout} | {:error, term()}
+          {:ok, Result.t()} | {:error, :timeout} | {:error, term()}
   def run(command, options \\ []) do
     with {:ok, program} <- open(command, options) do
       collect(program, [], [], deadline(options[:timeout] || :infinity))
@@ -166,7 +169,12 @@ defmodule Exec do
         collect(program, out, [data | err], deadline)
 
       {:ok, {:exit, status}} ->
-        {:ok, %Output{stdout: Enum.reverse(out), stderr: Enum.reverse(err), exit_status: status}}
+        {:ok,
+         %Result{
+           stdout: out |> Enum.reverse() |> IO.iodata_to_binary(),
+           stderr: err |> Enum.reverse() |> IO.iodata_to_binary(),
+           exit_status: status
+         }}
 
       {:error, :timeout} ->
         # This call started it, so nothing else is holding it.

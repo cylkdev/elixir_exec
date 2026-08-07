@@ -1,7 +1,7 @@
 defmodule ExecTest do
   use ExUnit.Case
 
-  alias Exec.Output
+  alias Exec.Result
 
   doctest Exec
 
@@ -126,12 +126,16 @@ defmodule ExecTest do
   describe "run/2" do
     test "returns stdout, stderr and the exit status" do
       assert Exec.run("echo out; echo err 1>&2") ===
-               {:ok, %Output{stdout: ["out\n"], stderr: ["err\n"], exit_status: 0}}
+               {:ok, %Result{stdout: "out\n", stderr: "err\n", exit_status: 0}}
     end
 
     test "reports a non-zero exit as success, with the shell's code" do
       assert Exec.run("echo partial; exit 3") ===
-               {:ok, %Output{stdout: ["partial\n"], stderr: [], exit_status: 3}}
+               {:ok, %Result{stdout: "partial\n", stderr: "", exit_status: 3}}
+    end
+
+    test "joins output written in separate chunks into one binary" do
+      assert {:ok, %Result{stdout: "abc"}} = Exec.run("printf a; sleep 0.2; printf bc")
     end
 
     test "a program that outlives its timeout returns {:error, :timeout}" do
