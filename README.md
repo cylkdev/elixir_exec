@@ -199,7 +199,9 @@ Because `Exec.signal/2` signals the whole group, a program that traps a signal i
 
 `Exec` sends such a signal a second time, once, if the program is still running a short while afterwards. The consequence for a program that installs its own handler for one of those four signals within the first quarter-second of starting is that the program may observe that signal twice.
 
-`Exec.stop/1` is unaffected, because it escalates to `SIGKILL`, which no handler can absorb. Signals other than those four are unaffected for the same reason: `exec-port` installs no handler for them, so a newly created program has none to inherit.
+`Exec.stop/1` always ends the program, because it escalates to `SIGKILL`, which no handler can absorb. Its opening `SIGTERM` is one of the four, though, and can be swallowed in that same moment like any other. When that happens the program ends at the escalation rather than promptly — around five seconds after the `Exec.stop/1` call by default, or after whatever `:kill_timeout` was given. A program stopped a moment after `Exec.open/2` returns can therefore stall for that long before its `{:exit, 0}` arrives, where the same call a few tens of milliseconds later returns the exit almost at once.
+
+Signals other than those four are never swallowed: `exec-port` installs no handler for them, so a newly created program has none to inherit.
 
 ## Configuration
 

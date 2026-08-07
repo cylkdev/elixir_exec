@@ -90,8 +90,12 @@ defmodule Exec do
   those four signals within the first quarter-second may therefore observe it
   twice.
 
-  `stop/1` is unaffected: it escalates to `SIGKILL`, which cannot be absorbed by
-  any handler. Signals outside those four are unaffected for the same reason.
+  `stop/1` always ends the program, because it escalates to `SIGKILL`, which no
+  handler can absorb. Its opening `SIGTERM` can still be swallowed in that same
+  moment, though, and then the program ends at the escalation rather than
+  promptly -- around five seconds later by default, or after `:kill_timeout`.
+  Signals outside those four are never swallowed, because the runner's port
+  program installs no handler for them.
 
   ## Failure to launch
 
