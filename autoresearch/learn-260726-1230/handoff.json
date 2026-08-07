@@ -1,0 +1,16 @@
+{
+  "version": "2.1.0",
+  "source": "learn",
+  "timestamp": "2026-07-26T12:35",
+  "status": "success",
+  "results_tsv": "autoresearch/learn-260726-1230/learn-results.tsv",
+  "findings": [
+    "LICENSE file missing but listed in mix.exs package.files — mix hex.build will fail",
+    "No CHANGELOG.md; mix.exs docs extras contains only README.md"
+  ],
+  "config": {
+    "mode": "init",
+    "scope": "*",
+    "depth": "standard"
+  }
+}

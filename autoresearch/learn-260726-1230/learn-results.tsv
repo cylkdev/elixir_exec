@@ -1,0 +1,4 @@
+# metric_direction: higher_is_better
+iteration	timestamp	file_documented	validation_status	issues_found	issues_fixed	description
+1	2026-07-26T12:31	README.md	pass	3	3	Architecture/API sections undercounted modules: added ElixirExec.Output, Mix task, Application; ex_doc hidden-module warning introduced then fixed
+2	2026-07-26T12:34	(scout)	pass	0	0	No documentation gaps remain in lib/**; early stop
