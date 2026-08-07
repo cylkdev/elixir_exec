@@ -112,6 +112,55 @@ defmodule Exec do
     :debug
   ]
 
+  # Signal numbers are POSIX-guaranteed only for 1..15. Above that they are
+  # platform-assigned: SIGUSR1 is 10 on Linux and 30 on Darwin, SIGCHLD 17 and
+  # 20, SIGSTOP 19 and 17.
+  #
+  # erlexec's own table (exec.erl:816) hardcodes the Linux numbers, so asking it
+  # to translate :sigchld on a Mac sends signal 17 -- SIGSTOP there. It also has
+  # no entry at all for :sigusr1 or :sigusr2, the two signals conventionally
+  # reserved for application use, and raises function_clause on any name it does
+  # not know. That raise happens inside Exec.Program, whose link to erlexec's
+  # controller then kills the running program: a typo destroys the thing it was
+  # meant to signal.
+  #
+  # Resolving names here and passing :exec.kill/2 an integer means erlexec's
+  # table is never consulted and that crash is unreachable.
+  @signals_posix %{
+    sighup: 1,
+    sigint: 2,
+    sigquit: 3,
+    sigill: 4,
+    sigtrap: 5,
+    sigabrt: 6,
+    sigfpe: 8,
+    sigkill: 9,
+    sigsegv: 11,
+    sigpipe: 13,
+    sigalrm: 14,
+    sigterm: 15
+  }
+
+  @signals_linux %{
+    sigusr1: 10,
+    sigusr2: 12,
+    sigchld: 17,
+    sigcont: 18,
+    sigstop: 19,
+    sigtstp: 20,
+    sigwinch: 28
+  }
+
+  @signals_darwin %{
+    sigusr1: 30,
+    sigusr2: 31,
+    sigchld: 20,
+    sigcont: 19,
+    sigstop: 17,
+    sigtstp: 18,
+    sigwinch: 28
+  }
+
   @typedoc """
   Options for a command, as a keyword list.
 
@@ -293,8 +342,8 @@ defmodule Exec do
       :ok = Exec.signal(program, :sigkill)
       :ok = Exec.signal(program, 9)
   """
-  @spec signal(t(), atom() | integer()) :: :ok | {:error, term()}
-  def signal(program, signal), do: Program.kill(program, signal)
+  @spec signal(t(), atom() | non_neg_integer()) :: :ok | {:error, term()}
+  def signal(program, signal), do: Program.kill(program, signal_number!(signal))
 
   @doc """
   Runs `command` to completion and returns its output.
@@ -510,4 +559,28 @@ defmodule Exec do
   end
 
   defp resolve_executable_path(command), do: command
+
+  defp signal_table do
+    case :os.type() do
+      {:unix, :darwin} -> Map.merge(@signals_posix, @signals_darwin)
+      {:unix, _} -> Map.merge(@signals_posix, @signals_linux)
+    end
+  end
+
+  defp signal_number!(number) when is_integer(number) and number in 0..64, do: number
+
+  defp signal_number!(name) when is_atom(name) do
+    case Map.fetch(signal_table(), name) do
+      {:ok, number} ->
+        number
+
+      :error ->
+        raise ArgumentError, "unknown signal #{inspect(name)}"
+    end
+  end
+
+  defp signal_number!(other) do
+    raise ArgumentError,
+          "signal must be a signal name or an integer in 0..64, got: #{inspect(other)}"
+  end
 end

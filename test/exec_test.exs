@@ -176,6 +176,57 @@ defmodule ExecTest do
     end
   end
 
+  describe "signal/2 argument handling" do
+    test "sends a signal erlexec's own table does not know" do
+      token = unique_token()
+      {:ok, program} = Exec.open(["sleep", token])
+
+      assert await_os_process(token, :present)
+      assert Exec.signal(program, :sigusr1) === :ok
+      assert await_os_process(token, :absent)
+    end
+
+    test "an unknown signal name raises and leaves the program running" do
+      token = unique_token()
+      {:ok, program} = Exec.open(["sleep", token])
+
+      assert await_os_process(token, :present)
+
+      assert_raise ArgumentError, ~r/unknown signal :not_a_signal/, fn ->
+        Exec.signal(program, :not_a_signal)
+      end
+
+      assert await_os_process(token, :present)
+      assert Exec.stop(program) === :ok
+    end
+
+    test "a signal that is neither a name nor an integer raises" do
+      {:ok, program} = Exec.open(["sleep", unique_token()])
+
+      assert_raise ArgumentError, ~r/signal must be/, fn ->
+        Exec.signal(program, "sigterm")
+      end
+
+      assert Exec.stop(program) === :ok
+    end
+
+    test "an integer outside the signal range raises" do
+      {:ok, program} = Exec.open(["sleep", unique_token()])
+
+      assert_raise ArgumentError, ~r/signal must be/, fn -> Exec.signal(program, 9999) end
+      assert_raise ArgumentError, ~r/signal must be/, fn -> Exec.signal(program, -1) end
+
+      assert Exec.stop(program) === :ok
+    end
+
+    test "signal 0 is accepted, since it asks whether the program exists" do
+      {:ok, program} = Exec.open(["sleep", unique_token()])
+
+      assert Exec.signal(program, 0) === :ok
+      assert Exec.stop(program) === :ok
+    end
+  end
+
   describe "run/2" do
     test "returns stdout, stderr and the exit status" do
       assert Exec.run("echo out; echo err 1>&2") ===
