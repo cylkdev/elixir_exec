@@ -196,7 +196,6 @@ defmodule ElixirExec.Connection do
         :env,
         :kill,
         :kill_timeout,
-        :group,
         :user,
         :nice,
         :success_exit_code,
@@ -213,7 +212,7 @@ defmodule ElixirExec.Connection do
     case status do
       :normal -> 0
       {:exit_status, raw} when Bitwise.band(raw, 0xFF) === 0 -> Bitwise.bsr(raw, 8)
-      {:exit_status, raw} -> {:signal, :exec.signal(Bitwise.band(raw, 0x7F))}
+      {:exit_status, raw} -> raw |> Bitwise.band(0x7F) |> :exec.signal() |> then(&{:signal, &1})
       other -> other
     end
   end

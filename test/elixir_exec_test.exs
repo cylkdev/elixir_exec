@@ -218,7 +218,7 @@ defmodule ElixirExecTest do
 
       assert await_os_process(token, :present)
 
-      Process.exit(Process.whereis(ElixirExec.ConnectionSupervisor), :kill)
+      ElixirExec.ConnectionSupervisor |> Process.whereis() |> Process.exit(:kill)
 
       assert await_os_process(token, :absent)
     end

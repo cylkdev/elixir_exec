@@ -34,14 +34,15 @@ defmodule Mix.Tasks.ElixirExec.SetupUser do
     end
 
     {_out, status} = System.cmd(script, argv, into: IO.stream(:stdio, :line))
-    if status != 0, do: Mix.raise("setup-erlexec-user.sh exited with status #{status}")
+    if status !== 0, do: Mix.raise("setup-erlexec-user.sh exited with status #{status}")
   end
 
   # Resolves priv/ whether running in this repo or from a consumer's
   # deps/elixir_exec. (Not available inside an escript, but user setup is a
   # deploy-host operation, not an escript-runtime one.)
   defp script_path do
-    priv = :code.priv_dir(:elixir_exec) |> List.to_string()
+    priv_dir = :code.priv_dir(:elixir_exec)
+    priv = List.to_string(priv_dir)
     Path.join([priv, "scripts", "setup-erlexec-user.sh"])
   end
 end
