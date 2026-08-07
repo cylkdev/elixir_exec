@@ -122,8 +122,7 @@ defmodule Exec.Program do
            events: :queue.new(),
            reader: nil,
            exited?: false,
-           started_at: System.monotonic_time(:millisecond),
-           resent?: false
+           started_at: System.monotonic_time(:millisecond)
          }}
 
       {:error, reason} ->
@@ -204,11 +203,12 @@ defmodule Exec.Program do
     {:noreply, %{state | reader: nil}}
   end
 
-  # The program is still running 50ms after a signal that
-  # exec-port's inherited handler may have swallowed. Send it once more.
+  # The program is still running 50ms after a signal that exec-port's inherited
+  # handler may have swallowed. Send it again, and keep doing so until it exits
+  # or the spawn window closes.
   def handle_info({:resend, signal}, %{exited?: false} = state) do
     _ = :exec.kill(state.os_pid, signal)
-    {:noreply, state}
+    {:noreply, schedule_resend(state, signal)}
   end
 
   # It exited in the meantime, so the first signal landed.
@@ -255,24 +255,32 @@ defmodule Exec.Program do
   end
 
   # A signal swallowed in the fork-to-execve window never reached the program, so
-  # sending it once more is the difference between the caller's instruction being
+  # sending it again is the difference between the caller's instruction being
   # carried out and being silently dropped.
   #
+  # Retried rather than tried once: a single retry after 50ms is not a bound. On
+  # a loaded machine the window can outlast it, and then the original and the
+  # retry are both swallowed and the signal is lost anyway. What bounds this is
+  # @spawn_window_ms: sends stop once the program is that old, or once it has
+  # exited. At 50ms apart within a 250ms window that is at most six further
+  # sends, the last no later than 300ms after the program started.
+  #
   # This cannot tell a swallowed signal from one the program deliberately
-  # ignored. A program that installs its own handler for one of these four within 250ms
-  # of starting may therefore see it twice. That is
-  # accepted against a signal being lost outright roughly one time in eleven.
+  # ignored, so a program that installs its own handler for one of these four
+  # inside the window may see it several times rather than twice. That is
+  # accepted, weighed against a signal being lost outright roughly one time in
+  # eleven: a duplicate is a nuisance the caller can see and reason about, while
+  # a loss is the instruction silently not happening.
   #
   # Delete this once erlexec resets the child's signal dispositions before
   # execve; the reproduction and the proposed fix are in ../erlexec_signal_loss.
-  defp schedule_resend(%{resent?: false} = state, signal)
-       when signal in @swallowable_signals do
-    if System.monotonic_time(:millisecond) - state.started_at <= @spawn_window_ms do
-      Process.send_after(self(), {:resend, signal}, @resend_after_ms)
-      %{state | resent?: true}
-    else
-      state
-    end
+  defp schedule_resend(state, signal) when signal in @swallowable_signals do
+    _ =
+      if System.monotonic_time(:millisecond) - state.started_at <= @spawn_window_ms do
+        Process.send_after(self(), {:resend, signal}, @resend_after_ms)
+      end
+
+    state
   end
 
   defp schedule_resend(state, _signal), do: state

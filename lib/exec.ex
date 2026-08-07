@@ -85,17 +85,23 @@ defmodule Exec do
   run, so a signal arriving in that gap is absorbed by an inherited handler
   instead of reaching the program.
 
-  This module sends such a signal a second time, once, if the program is still
-  running shortly afterwards. A program that installs its own handler for one of
-  those four signals within the first quarter-second may therefore observe it
-  twice.
+  This module sends such a signal again, every 50 milliseconds, for as long as
+  the program is still running and no more than 250 milliseconds have passed
+  since it started: at most six further sends, the last of them no later than
+  300 milliseconds after the program started. A program that installs its own handler
+  for one of those four signals inside that window may therefore observe the
+  signal more than once. That is preferred deliberately: a signal delivered
+  twice is a nuisance, and a signal lost outright is the caller's instruction
+  not being carried out at all.
 
   `stop/1` always ends the program, because it escalates to `SIGKILL`, which no
   handler can absorb. Its opening `SIGTERM` can still be swallowed in that same
   moment, though, and then the program ends at the escalation rather than
   promptly -- around five seconds later by default, or after `:kill_timeout`.
-  Signals outside those four are never swallowed, because the runner's port
-  program installs no handler for them.
+  Signals outside those four are not absorbed this way: the only other handler
+  the runner's port program installs is for `SIGCHLD`, which a program ignores
+  by default in any case, so nothing a caller can send through `signal/2` is
+  swallowed except those four.
 
   ## Failure to launch
 
@@ -289,6 +295,9 @@ defmodule Exec do
   # command is reachable through this module's own argument checks; anything
   # else is tagged rather than guessed at, so it stays matchable.
   defp normalize_start_error(~c"empty command provided"), do: :empty_command
+  # From DynamicSupervisor, not from the runner: tagging it {:exec, _} would
+  # blame the runner for a supervisor limit.
+  defp normalize_start_error(:max_children), do: :max_children
   defp normalize_start_error(reason) when is_list(reason), do: {:exec, to_string(reason)}
   defp normalize_start_error(reason), do: {:exec, reason}
 
@@ -383,8 +392,14 @@ defmodule Exec do
   `{:exit, {:signal, name}}`, so a signal sent by name comes back under that
   name.
 
-  Unlike `stop/1` nothing is escalated: exactly one signal is sent, to the
-  program's whole process group.
+  Unlike `stop/1` nothing is escalated: the signal sent is the signal asked for,
+  and never a different one, to the program's whole process group.
+
+  One of `:sighup`, `:sigint`, `:sigpipe` or `:sigterm` is sent again, though,
+  as long as the program is still running and the call landed in the first 250
+  milliseconds of the program's life. A single send can be swallowed there, so a
+  program that handles one of those four that early may see it more than once.
+  See the module documentation.
 
   A program that traps a signal is not protected from `signal/2` when its
   command was given as a binary. The `/bin/sh -c` wrapper shares the program's
@@ -654,6 +669,11 @@ defmodule Exec do
     case :os.type() do
       {:unix, :darwin} -> Map.merge(@signals_shared, @signals_darwin)
       {:unix, _} -> Map.merge(@signals_shared, @signals_linux)
+      # Unreachable while erlexec is the runner, since its port program is
+      # POSIX-only. A clause here costs a line and keeps the failure an
+      # ArgumentError, as the documentation promises, rather than a
+      # CaseClauseError.
+      other -> raise ArgumentError, "signal names are known only on unix, got: #{inspect(other)}"
     end
   end
 

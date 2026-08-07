@@ -98,7 +98,7 @@ Exec.write(program, :eof)
 
 `{:ok, {:exit, status}}` is the last event a program produces. The handle is spent once that event has been read, and reading from a spent handle exits the calling process.
 
-`Exec.stop/1` sends `SIGTERM` and escalates to `SIGKILL` after roughly five seconds, so a program that ignores `SIGTERM` can take that long to end; the `:kill_timeout` option changes that delay. `Exec.signal/2` sends exactly one signal and escalates nothing, so `Exec.signal(program, :sigkill)` ends a program immediately:
+`Exec.stop/1` sends `SIGTERM` and escalates to `SIGKILL` after roughly five seconds, so a program that ignores `SIGTERM` can take that long to end; the `:kill_timeout` option changes that delay. `Exec.signal/2` escalates nothing — the signal sent is the signal asked for and never a different one — so `Exec.signal(program, :sigkill)` ends a program immediately. It is not always sent exactly once: `SIGHUP`, `SIGINT`, `SIGPIPE` and `SIGTERM` are sent again while the program is still running inside the first 250 milliseconds of its life, for the reason given under [Signals sent immediately after starting](#signals-sent-immediately-after-starting):
 
 ```elixir
 {:ok, program} = Exec.open("tail -f /var/log/system.log")
@@ -191,17 +191,17 @@ Because `Exec.signal/2` signals the whole group, a program that traps a signal i
 
 `Exec.write/2`, `Exec.stop/1` and `Exec.signal/2` each return `{:error, :not_running}` when the program has already ended. Output the program produced before it ended is still readable with `Exec.read/2`; the handle is spent only once the `{:exit, status}` event has been read.
 
-`Exec.signal/2` accepts a signal name such as `:sigterm`, `:sigkill` or `:sigusr1`, or the integer number. Names are resolved for the operating system the VM is running on, because POSIX guarantees the numbers only for signals 1 to 15: `:sigusr1` is 10 on Linux and 30 on Darwin. A name that is not a known signal, an integer outside `0..64`, and anything that is neither a name nor an integer each raise `ArgumentError` in the calling process. Signal `0` is accepted: it sends nothing and asks whether the program exists.
+`Exec.signal/2` accepts a signal name such as `:sigterm`, `:sigkill` or `:sigusr1`, or the integer number. Names are resolved for the operating system the VM is running on, because the two systems disagree about some of the numbers: `:sigusr1` is 10 on Linux and 30 on Darwin. The same table names the signal reported in `{:exit, {:signal, name}}`, so a signal sent by name comes back under that name. The names known are `:sighup`, `:sigint`, `:sigquit`, `:sigill`, `:sigtrap`, `:sigabrt`, `:sigfpe`, `:sigkill`, `:sigsegv`, `:sigpipe`, `:sigalrm`, `:sigterm`, `:sigttin`, `:sigttou`, `:sigxcpu`, `:sigxfsz`, `:sigvtalrm`, `:sigprof`, `:sigwinch`, `:sigusr1`, `:sigusr2`, `:sigchld`, `:sigcont`, `:sigstop` and `:sigtstp`. A name that is not a known signal, an integer outside `0..64`, and anything that is neither a name nor an integer each raise `ArgumentError` in the calling process. Signal `0` is accepted: it sends nothing and asks whether the program exists.
 
 ### Signals sent immediately after starting
 
 `SIGHUP`, `SIGINT`, `SIGPIPE` and `SIGTERM` can be lost when they are sent in the moment between a program being created and its beginning to run. `:erlexec`'s port program, `exec-port`, installs handlers for those four signals for itself, and a newly created program inherits those handlers until it replaces itself with the command being run. A signal arriving in that gap is absorbed by an inherited handler instead of reaching the program that was asked for.
 
-`Exec` sends such a signal a second time, once, if the program is still running a short while afterwards. The consequence for a program that installs its own handler for one of those four signals within the first quarter-second of starting is that the program may observe that signal twice.
+`Exec` sends such a signal again, every 50 milliseconds, for as long as the program is still running and no more than 250 milliseconds have passed since it started — at most six further sends, the last of them no later than 300 milliseconds after the program started. The consequence for a program that installs its own handler for one of those four signals inside that window is that the program may observe the signal more than once. That trade is deliberate: a duplicate is a nuisance the caller can reason about, and a lost signal is the caller's instruction silently not happening.
 
 `Exec.stop/1` always ends the program, because it escalates to `SIGKILL`, which no handler can absorb. Its opening `SIGTERM` is one of the four, though, and can be swallowed in that same moment like any other. When that happens the program ends at the escalation rather than promptly — around five seconds after the `Exec.stop/1` call by default, or after whatever `:kill_timeout` was given. A program stopped a moment after `Exec.open/2` returns can therefore stall for that long before its `{:exit, 0}` arrives, where the same call a few tens of milliseconds later returns the exit almost at once.
 
-Signals other than those four are never swallowed: `exec-port` installs no handler for them, so a newly created program has none to inherit.
+Signals other than those four are not absorbed this way. The only other handler `exec-port` installs is for `SIGCHLD`, which a program ignores by default in any case, so nothing a caller can send through `Exec.signal/2` is swallowed except those four.
 
 ## Configuration
 
