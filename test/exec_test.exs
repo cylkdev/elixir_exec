@@ -176,6 +176,166 @@ defmodule ExecTest do
     end
   end
 
+  describe "signal/2 argument handling" do
+    # The name has to survive the round trip, not merely end the program: on a
+    # Mac the number 30 is SIGUSR1 and on Linux it is SIGPWR, so a table read in
+    # one direction and not the other reports a signal nobody sent. Both of
+    # these are names erlexec's own table has no entry for, and both are
+    # numbered differently on Linux and Darwin.
+    test "a signal whose number differs between platforms round-trips by name" do
+      token = unique_token()
+      {:ok, program} = Exec.open(["sleep", token])
+      assert await_os_process(token, :present)
+
+      assert Exec.signal(program, :sigusr1) === :ok
+      assert Exec.read(program) === {:ok, {:exit, {:signal, :sigusr1}}}
+    end
+
+    test "sigusr2 round-trips by name" do
+      token = unique_token()
+      {:ok, program} = Exec.open(["sleep", token])
+      assert await_os_process(token, :present)
+
+      assert Exec.signal(program, :sigusr2) === :ok
+      assert Exec.read(program) === {:ok, {:exit, {:signal, :sigusr2}}}
+    end
+
+    # Numbered 27 on both systems, and not in erlexec's table either.
+    test "a signal numbered the same on both platforms round-trips by name" do
+      token = unique_token()
+      {:ok, program} = Exec.open(["sleep", token])
+      assert await_os_process(token, :present)
+
+      assert Exec.signal(program, :sigprof) === :ok
+      assert Exec.read(program) === {:ok, {:exit, {:signal, :sigprof}}}
+    end
+
+    # Accepted by erlexec before this module took over resolving names, so
+    # dropping them would have been a silent breaking change.
+    test "accepts the resource-limit names" do
+      token = unique_token()
+      {:ok, program} = Exec.open(["sleep", token])
+      assert await_os_process(token, :present)
+
+      assert Exec.signal(program, :sigxcpu) === :ok
+      assert Exec.read(program) === {:ok, {:exit, {:signal, :sigxcpu}}}
+    end
+
+    # SIGTTIN and SIGTTOU stop a program rather than end it, so what is checked
+    # here is that the name resolves and the send is accepted. The stop that
+    # follows escalates to SIGKILL, which reaches a stopped program.
+    test "accepts the job-control names" do
+      token = unique_token()
+      {:ok, program} = Exec.open(["sleep", token], kill_timeout: 1)
+      assert await_os_process(token, :present)
+
+      assert Exec.signal(program, :sigttin) === :ok
+      assert Exec.signal(program, :sigttou) === :ok
+      assert Exec.stop(program) === :ok
+      assert Exec.read(program) === {:ok, {:exit, 0}}
+    end
+
+    test "an unknown signal name raises and leaves the program running" do
+      token = unique_token()
+      {:ok, program} = Exec.open(["sleep", token])
+
+      assert await_os_process(token, :present)
+
+      assert_raise ArgumentError, ~r/unknown signal :not_a_signal/, fn ->
+        Exec.signal(program, :not_a_signal)
+      end
+
+      assert await_os_process(token, :present)
+      assert Exec.stop(program) === :ok
+    end
+
+    test "a signal that is neither a name nor an integer raises" do
+      {:ok, program} = Exec.open(["sleep", unique_token()])
+
+      assert_raise ArgumentError, ~r/signal must be/, fn ->
+        Exec.signal(program, "sigterm")
+      end
+
+      assert Exec.stop(program) === :ok
+    end
+
+    test "an integer outside the signal range raises" do
+      {:ok, program} = Exec.open(["sleep", unique_token()])
+
+      assert_raise ArgumentError, ~r/signal must be/, fn -> Exec.signal(program, 9999) end
+      assert_raise ArgumentError, ~r/signal must be/, fn -> Exec.signal(program, -1) end
+
+      assert Exec.stop(program) === :ok
+    end
+
+    test "signal 0 is accepted, since it asks whether the program exists" do
+      {:ok, program} = Exec.open(["sleep", unique_token()])
+
+      assert Exec.signal(program, 0) === :ok
+      assert Exec.stop(program) === :ok
+    end
+  end
+
+  describe "a program that has ended" do
+    test "write/2, stop/1 and signal/2 report it, with the exit still unread" do
+      {:ok, program} = Exec.open("echo hi")
+
+      # Wait for the exit to reach the handle without reading it, so the handle
+      # is still alive and holding the queued events.
+      Process.sleep(500)
+
+      assert Exec.write(program, "x") === {:error, :not_running}
+      assert Exec.stop(program) === {:error, :not_running}
+      assert Exec.signal(program, :sigterm) === {:error, :not_running}
+    end
+
+    test "the queued output is still readable afterwards" do
+      {:ok, program} = Exec.open("echo hi")
+      Process.sleep(500)
+
+      assert Exec.write(program, "x") === {:error, :not_running}
+
+      assert Exec.read(program) === {:ok, {:stdout, "hi\n"}}
+      assert Exec.read(program) === {:ok, {:exit, 0}}
+    end
+
+    test "write/2, stop/1 and signal/2 report it on a spent handle" do
+      {:ok, program} = Exec.open("echo hi")
+      assert Exec.read(program) === {:ok, {:stdout, "hi\n"}}
+      assert Exec.read(program) === {:ok, {:exit, 0}}
+
+      assert Exec.write(program, "x") === {:error, :not_running}
+      assert Exec.stop(program) === {:error, :not_running}
+      assert Exec.signal(program, :sigterm) === {:error, :not_running}
+    end
+  end
+
+  describe "signals sent immediately after open/2" do
+    # erlexec's port program installs handlers for SIGHUP, SIGINT, SIGPIPE and
+    # SIGTERM, and a forked child inherits them until execve replaces the image.
+    # A signal in those four sent in that window is swallowed. Measured at
+    # roughly nine losses in a hundred before the resend below.
+    #
+    # 100 iterations asserting zero losses, rather than sampling a rate: at a
+    # loss probability of 0.09 a regression appears with probability above
+    # 1 - 0.91^100, which is greater than 0.9999, while a working resend gives
+    # zero on any machine.
+    test "are not lost" do
+      losses =
+        Enum.count(1..100, fn _ ->
+          {:ok, program} = Exec.open(["sleep", unique_token()])
+          :ok = Exec.signal(program, :sigterm)
+
+          case Exec.read(program, 3000) do
+            {:ok, {:exit, _}} -> false
+            {:error, :timeout} -> true
+          end
+        end)
+
+      assert losses === 0
+    end
+  end
+
   describe "run/2" do
     test "returns stdout, stderr and the exit status" do
       assert Exec.run("echo out; echo err 1>&2") ===
@@ -470,7 +630,7 @@ defmodule ExecTest do
   end
 
   defp await_os_process(token, expected, attempts) do
-    {out, _status} = System.cmd("pgrep", ["-f", "sleep #{token}"], stderr_to_stdout: true)
+    {out, _status} = System.cmd("pgrep", ["-f", "sleep #{token}$"], stderr_to_stdout: true)
     running? = String.trim(out) !== ""
 
     if running? === (expected === :present) do

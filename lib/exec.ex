@@ -76,6 +76,33 @@ defmodule Exec do
   That `"Terminated\\n"` comes from the shell, not from the program. A list
   command has no shell to write it.
 
+  ## Signals sent immediately after starting
+
+  `SIGHUP`, `SIGINT`, `SIGPIPE` and `SIGTERM` can be lost if they are sent in
+  the moment between a program being created and its beginning to run. The
+  runner's own port program installs handlers for those four, and a newly
+  created program inherits them until it replaces itself with the command being
+  run, so a signal arriving in that gap is absorbed by an inherited handler
+  instead of reaching the program.
+
+  This module sends such a signal again, every 50 milliseconds, for as long as
+  the program is still running and no more than 250 milliseconds have passed
+  since it started: at most six further sends, the last of them no later than
+  300 milliseconds after the program started. A program that installs its own handler
+  for one of those four signals inside that window may therefore observe the
+  signal more than once. That is preferred deliberately: a signal delivered
+  twice is a nuisance, and a signal lost outright is the caller's instruction
+  not being carried out at all.
+
+  `stop/1` always ends the program, because it escalates to `SIGKILL`, which no
+  handler can absorb. Its opening `SIGTERM` can still be swallowed in that same
+  moment, though, and then the program ends at the escalation rather than
+  promptly -- around five seconds later by default, or after `:kill_timeout`.
+  Signals outside those four are not absorbed this way: the only other handler
+  the runner's port program installs is for `SIGCHLD`, which a program ignores
+  by default in any case, so nothing a caller can send through `signal/2` is
+  swallowed except those four.
+
   ## Failure to launch
 
   A missing executable, a permission failure and an unreachable `:cd` are
@@ -111,6 +138,69 @@ defmodule Exec do
     :capabilities,
     :debug
   ]
+
+  # Signal numbers are not the same on every system. SIGUSR1 is 10 on Linux and
+  # 30 on Darwin, SIGCHLD 17 and 20, SIGSTOP 19 and 17.
+  #
+  # erlexec's own table (exec.erl:816) hardcodes the Linux numbers, so asking it
+  # to translate :sigchld on a Mac sends signal 17 -- SIGSTOP there. It also has
+  # no entry at all for :sigusr1 or :sigusr2, the two signals conventionally
+  # reserved for application use, and raises function_clause on any name it does
+  # not know. That raise happens inside Exec.Program, whose link to erlexec's
+  # controller then kills the running program: a typo destroys the thing it was
+  # meant to signal.
+  #
+  # Resolving names here, and passing :exec.kill/2 an integer, means erlexec's
+  # table is never consulted and that crash is unreachable. The same tables are
+  # read backwards by signal_name/1 below, so a signal number arriving from a
+  # dying program is named from the running system's table rather than from
+  # erlexec's.
+  #
+  # The entries below carry the number each name has on both Linux and Darwin.
+  # They are grouped this way because the numbers were checked and found to
+  # agree, not because any rule guarantees it: SIGUSR1 is under 16 and differs.
+  # Checked with `kill -l <number>` on Debian and `python3 -c "import signal"`
+  # on macOS 15.
+  @signals_shared %{
+    sighup: 1,
+    sigint: 2,
+    sigquit: 3,
+    sigill: 4,
+    sigtrap: 5,
+    sigabrt: 6,
+    sigfpe: 8,
+    sigkill: 9,
+    sigsegv: 11,
+    sigpipe: 13,
+    sigalrm: 14,
+    sigterm: 15,
+    sigttin: 21,
+    sigttou: 22,
+    sigxcpu: 24,
+    sigxfsz: 25,
+    sigvtalrm: 26,
+    sigprof: 27,
+    sigwinch: 28
+  }
+
+  # The names whose number the two systems disagree about.
+  @signals_linux %{
+    sigusr1: 10,
+    sigusr2: 12,
+    sigchld: 17,
+    sigcont: 18,
+    sigstop: 19,
+    sigtstp: 20
+  }
+
+  @signals_darwin %{
+    sigusr1: 30,
+    sigusr2: 31,
+    sigchld: 20,
+    sigcont: 19,
+    sigstop: 17,
+    sigtstp: 18
+  }
 
   @typedoc """
   Options for a command, as a keyword list.
@@ -205,6 +295,9 @@ defmodule Exec do
   # command is reachable through this module's own argument checks; anything
   # else is tagged rather than guessed at, so it stays matchable.
   defp normalize_start_error(~c"empty command provided"), do: :empty_command
+  # From DynamicSupervisor, not from the runner: tagging it {:exec, _} would
+  # blame the runner for a supervisor limit.
+  defp normalize_start_error(:max_children), do: :max_children
   defp normalize_start_error(reason) when is_list(reason), do: {:exec, to_string(reason)}
   defp normalize_start_error(reason), do: {:exec, reason}
 
@@ -258,15 +351,19 @@ defmodule Exec do
   @doc """
   Writes `data` to the standard input of `program`, or closes it with `:eof`.
 
-  Returns `{:error, reason}` if the program has already exited. A program
-  started with `stdin: false` accepts the write and discards it.
+  A program started with `stdin: false` accepts the write and discards it.
 
   ## Examples
 
       :ok = Exec.write(program, "hello\\n")
       :ok = Exec.write(program, :eof)
+
+  ## Errors
+
+    * `{:error, :not_running}` - the program has ended. Any output it produced
+      before ending is still readable with `read/2`.
   """
-  @spec write(t(), iodata() | :eof) :: :ok | {:error, term()}
+  @spec write(t(), iodata() | :eof) :: :ok | {:error, :not_running}
   def write(program, data), do: Program.write(program, data)
 
   @doc """
@@ -277,24 +374,54 @@ defmodule Exec do
   option changes that delay. `signal/2` with `:sigkill` ends it immediately.
 
   A program stopped this way reports exit status `0`, not a signal.
+
+  ## Errors
+
+    * `{:error, :not_running}` - the program had already ended.
   """
-  @spec stop(t()) :: :ok | {:error, term()}
+  @spec stop(t()) :: :ok | {:error, :not_running}
   def stop(program), do: Program.stop(program)
 
   @doc """
   Sends `signal` to `program`.
 
-  `signal` is an atom such as `:sigterm`, `:sigkill` or `:sighup`, or the
-  integer number. Unlike `stop/1` nothing is escalated: exactly one signal is
-  sent.
+  `signal` is a name such as `:sigterm`, `:sigkill` or `:sigusr1`, or the
+  integer number. Names are resolved for the current operating system, because
+  the two systems disagree about some of the numbers: `:sigusr1` is 10 on Linux
+  and 30 on Darwin. The same table names the signal that `read/2` reports in
+  `{:exit, {:signal, name}}`, so a signal sent by name comes back under that
+  name.
+
+  Unlike `stop/1` nothing is escalated: the signal sent is the signal asked for,
+  and never a different one, to the program's whole process group.
+
+  One of `:sighup`, `:sigint`, `:sigpipe` or `:sigterm` is sent again, though,
+  as long as the program is still running and the call landed in the first 250
+  milliseconds of the program's life. A single send can be swallowed there, so a
+  program that handles one of those four that early may see it more than once.
+  See the module documentation.
+
+  A program that traps a signal is not protected from `signal/2` when its
+  command was given as a binary. The `/bin/sh -c` wrapper shares the program's
+  process group and traps nothing, so the wrapper dies and its exit is what
+  `read/2` reports. Use the list form to signal a program that handles signals
+  itself.
 
   ## Examples
 
       :ok = Exec.signal(program, :sigkill)
       :ok = Exec.signal(program, 9)
+
+  ## Errors
+
+    * `{:error, :not_running}` - the program had already ended.
+
+  Raises `ArgumentError` for a name that is not a known signal, for an integer
+  outside `0..64`, and for anything that is neither. Signal `0` is accepted: it
+  sends nothing and asks whether the program exists.
   """
-  @spec signal(t(), atom() | integer()) :: :ok | {:error, term()}
-  def signal(program, signal), do: Program.kill(program, signal)
+  @spec signal(t(), atom() | non_neg_integer()) :: :ok | {:error, :not_running}
+  def signal(program, signal), do: Program.kill(program, signal_number!(signal))
 
   @doc """
   Runs `command` to completion and returns its output.
@@ -475,7 +602,7 @@ defmodule Exec do
   defp trailing_line(tag, partial), do: [{tag, partial}]
 
   # erlexec builds the argv with a function accepting only binaries and lists
-  # (exec.erl:1356); anything else raises function_clause inside the :exec
+  # (exec.erl:1362); anything else raises function_clause inside the :exec
   # singleton, which is VM-wide and would take every other running program with
   # it.
   defp to_argv(command) when is_list(command) do
@@ -492,7 +619,7 @@ defmodule Exec do
   # everywhere, as System.shell/2 does.
   #
   # An empty command is passed through unwrapped: erlexec rejects an empty
-  # command itself (exec.cpp:401, "empty command provided"), but that check
+  # command itself (exec.cpp:404-405, "empty command provided"), but that check
   # inspects the first element of the argv it receives, and ["/bin/sh", "-c",
   # ""] is a three-element, non-empty argv. Wrapping "" would silently turn a
   # caller error into a program that runs and exits 0.
@@ -510,4 +637,60 @@ defmodule Exec do
   end
 
   defp resolve_executable_path(command), do: command
+
+  # Decodes the exit reason erlexec reports for a program. Kept here rather than
+  # in Exec.Program because it reads the signal tables above backwards, and one
+  # module owning both directions of that mapping is what keeps a name sent and
+  # a name reported the same name.
+  @doc false
+  @spec decode_exit_reason(term()) :: exit_status() | term()
+  def decode_exit_reason(:normal), do: 0
+
+  def decode_exit_reason({:exit_status, raw}) do
+    case Bitwise.band(raw, 0xFF) do
+      0 -> Bitwise.bsr(raw, 8)
+      _ -> {:signal, signal_name(Bitwise.band(raw, 0x7F))}
+    end
+  end
+
+  def decode_exit_reason(other), do: other
+
+  # A number the running system's table has no name for is returned as it
+  # stands, which says less than a name but never says something false.
+  defp signal_name(number) do
+    signal_table()
+    |> Enum.find_value(fn {name, n} -> if n === number, do: name end)
+    |> Kernel.||(number)
+  end
+
+  # No entry in either platform map shares a number with an entry in the shared
+  # map, so the reverse lookup above has exactly one answer.
+  defp signal_table do
+    case :os.type() do
+      {:unix, :darwin} -> Map.merge(@signals_shared, @signals_darwin)
+      {:unix, _} -> Map.merge(@signals_shared, @signals_linux)
+      # Unreachable while erlexec is the runner, since its port program is
+      # POSIX-only. A clause here costs a line and keeps the failure an
+      # ArgumentError, as the documentation promises, rather than a
+      # CaseClauseError.
+      other -> raise ArgumentError, "signal names are known only on unix, got: #{inspect(other)}"
+    end
+  end
+
+  defp signal_number!(number) when is_integer(number) and number in 0..64, do: number
+
+  defp signal_number!(name) when is_atom(name) do
+    case Map.fetch(signal_table(), name) do
+      {:ok, number} ->
+        number
+
+      :error ->
+        raise ArgumentError, "unknown signal #{inspect(name)}"
+    end
+  end
+
+  defp signal_number!(other) do
+    raise ArgumentError,
+          "signal must be a signal name or an integer in 0..64, got: #{inspect(other)}"
+  end
 end
