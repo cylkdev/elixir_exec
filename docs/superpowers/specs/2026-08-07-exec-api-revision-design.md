@@ -100,9 +100,14 @@ field is an exit code.
 | Current | New |
 |---|---|
 | `ElixirExec.Connection` | `Exec.Program` |
-| `ElixirExec.ConnectionSupervisor` | `Exec.Supervisor` |
+| `ElixirExec.ConnectionSupervisor` | `Exec.ProgramSupervisor` |
 | `ElixirExec.Application` | `Exec.Application` |
-| `ElixirExec.ConnectionSupervisor.start_supervised_connection/3` | `Exec.Supervisor.start_program/3` |
+| `ElixirExec.ConnectionSupervisor.start_supervised_connection/3` | `Exec.ProgramSupervisor.start_program/3` |
+
+The DynamicSupervisor becomes `Exec.ProgramSupervisor`, not `Exec.Supervisor`: the
+name `ElixirExec.Supervisor` is already taken by the root supervisor that
+`ElixirExec.Application.start/2` registers (`lib/elixir_exec/application.ex:13`). That
+root supervisor keeps its role and becomes `Exec.Supervisor`.
 
 "Connection" names a connection to nothing in particular; the documentation already
 calls the thing a program. `start_supervised_connection` says where it starts rather
@@ -156,13 +161,34 @@ finished".
 `{:error, reason}` currently passes erlexec's internal reasons through untouched,
 often as charlists.
 
-Normalize to POSIX atoms (`:enoent`, `:eacces`, and so on) where erlexec hands back a
-charlist that maps to one. Anything unrecognised surfaces as `{:exec, term}` — still
-matchable, never silently swallowed.
+The spec originally proposed normalizing to POSIX atoms (`:enoent`, `:eacces`).
+Probing erlexec 2.3 in the asynchronous mode this library uses disproved that: **there
+are no POSIX reasons to normalize.** A missing executable, a permission failure and an
+unreachable `:cd` all *start successfully*, write a diagnostic to stderr, and exit `1`:
 
-The exact set of reasons erlexec produces must be verified against the library during
-implementation. Document only the reasons confirmed by a test. Four documented
-reasons that are true beat twelve that are guessed.
+```
+:exec.run(["/nonexistent/nope"], [:link, :stdin, :stdout, :stderr])
+#=> {:ok, #PID<0.181.0>, 16991}
+#   {:stderr, 16991, "Pid 16991: cannot execute '/nonexistent/nope': No such file or directory\n"}
+#   {:EXIT, #PID<0.181.0>, {:exit_status, 256}}
+```
+
+Only two start failures are reachable at all:
+
+| erlexec returns | Becomes |
+|---|---|
+| `{:error, ~c"empty command provided"}` | `{:error, :empty_command}` |
+| `{:error, {:invalid_option, {key, value}}}` | raises `ArgumentError` |
+| any other charlist reason | `{:error, {:exec, binary}}` |
+
+Invalid option *values* raise rather than return, matching the unknown-key rule below
+and `System.cmd/3`'s precedent. All option problems raise; everything else returns
+`{:error, reason}`.
+
+This finding is itself a documentation requirement: "the executable was not found" is
+an **exit status**, not an `{:error, _}`. The current documentation never says so, and
+a caller pattern-matching on `{:error, :enoent}` would wait forever. Part 3 covers it
+explicitly.
 
 ### Leak: undocumented option passthrough
 
@@ -222,6 +248,13 @@ about never passing untrusted input. `run/2`, `stream!/2` and `open/2` get the s
 This is the clearest instance of the documentation answering the wrong question: it
 explains the implementation at length and never mentions the injection risk.
 
+### Failure-to-launch is an exit, not an error
+
+`run/2`, `stream!/2` and `open/2` each document that a missing executable, a
+permission failure and an unreachable `:cd` are reported as a non-zero exit status
+with a diagnostic on stderr — not as `{:error, _}`. `{:error, _}` means the command
+could not be handed to the operating system at all.
+
 ### README
 
 Restructured to: Installation → Quick start (the three entry points) → Command forms
@@ -238,9 +271,10 @@ the README warning about its absence.
 ### Tests
 
 - Existing suite migrated to the new names and return shapes.
-- New coverage: unknown options raise `ArgumentError`; `Result.stdout`/`stderr` are
-  binaries; `stream!/2` emits `{:exit, status}`; normalized error reasons for at least
-  a nonexistent executable and a permission failure.
+- New coverage: unknown options raise `ArgumentError`; an invalid option value raises
+  `ArgumentError`; `Result.stdout`/`stderr` are binaries; `stream!/2` emits
+  `{:exit, status}`; an empty command returns `{:error, :empty_command}`; a missing
+  executable exits non-zero with a stderr diagnostic rather than returning an error.
 - Doctests wired into the test run.
 
 ## Success criteria
