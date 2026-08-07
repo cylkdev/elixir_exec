@@ -1,4 +1,4 @@
-defmodule ElixirExec.Connection do
+defmodule Exec.Program do
   @moduledoc false
 
   # One process per running program.
@@ -33,20 +33,6 @@ defmodule ElixirExec.Connection do
     GenServer.start_link(__MODULE__, {command, owner, opts})
   end
 
-  def child_spec({command, owner, opts}) do
-    %{
-      id: {__MODULE__, opts[:id] || System.unique_integer([:monotonic, :positive])},
-      start: {__MODULE__, :start_link, [command, owner, opts]},
-      restart: :transient
-    }
-  end
-
-  def child_spec(opts) do
-    {command, opts} = Keyword.pop!(opts, :command)
-    {owner, opts} = Keyword.pop!(opts, :owner)
-    child_spec({command, owner, opts})
-  end
-
   # :infinity on the call itself: the timeout is the worker's to enforce, so a
   # slow program never exits the caller and never leaves a late reply behind.
   def read(conn, timeout), do: GenServer.call(conn, {:read, timeout}, :infinity)
@@ -54,6 +40,27 @@ defmodule ElixirExec.Connection do
   def write(conn, data), do: GenServer.call(conn, {:write, data})
 
   def stop(conn), do: GenServer.call(conn, :stop)
+
+  # stop/1 ends the OS program and leaves this process alive, because the caller
+  # still has the remaining events -- including the exit -- to read. shutdown/1
+  # is for a caller that is done reading: run/2 after its timeout, a halted
+  # stream!/2. Without it the exit arrives with no reader, gets queued, and this
+  # process sits holding a monitor and a queue nobody will ever read until the
+  # owner dies -- unbounded accumulation under a long-lived owner.
+  #
+  # Terminating is safe: the controller link reaps the OS program however this
+  # process goes (see the module comment above), so the stop below is a
+  # courtesy, not the mechanism.
+  #
+  # Both calls may find the process already gone -- it stops itself on the exit
+  # event, which can land between the caller's decision and this call -- so a
+  # :noproc exit is the expected outcome, not an error.
+  def shutdown(conn) do
+    _ = stop(conn)
+    GenServer.stop(conn, :normal)
+  catch
+    :exit, _reason -> :ok
+  end
 
   def kill(conn, signal), do: GenServer.call(conn, {:kill, signal})
 
@@ -68,7 +75,7 @@ defmodule ElixirExec.Connection do
   def init({command, owner, opts}) do
     Process.flag(:trap_exit, true)
 
-    case :exec.run(command, exec_run_options(opts)) do
+    case :exec.run(command, build_exec_options(opts)) do
       {:ok, _controller, os_pid} ->
         {:ok,
          %{
@@ -94,7 +101,7 @@ defmodule ElixirExec.Connection do
         {:reply, {:ok, event}, %{state | events: events}}
 
       {:empty, _events} ->
-        {:noreply, %{state | reader: {from, read_timer(timeout)}}}
+        {:noreply, %{state | reader: {from, start_read_timer(timeout)}}}
     end
   end
 
@@ -115,7 +122,7 @@ defmodule ElixirExec.Connection do
 
   @impl GenServer
   def handle_info({stream, _os_pid, data}, state) when stream in [:stdout, :stderr] do
-    record(state, {stream, data})
+    deliver_or_queue(state, {stream, data})
   end
 
   def handle_info({:DOWN, ref, :process, _pid, _reason}, %{owner_ref: ref} = state) do
@@ -131,7 +138,7 @@ defmodule ElixirExec.Connection do
   # handles its parent's exit itself, so any EXIT reaching here is the program
   # ending. Its reason carries the exit status (exec.erl:1219-1226).
   def handle_info({:EXIT, _controller, reason}, state) do
-    record(state, {:exit, exit_status(reason)})
+    deliver_or_queue(state, {:exit, decode_exit_reason(reason)})
   end
 
   def handle_info(:read_timeout, %{reader: {from, _timer}} = state) do
@@ -139,64 +146,86 @@ defmodule ElixirExec.Connection do
     {:noreply, %{state | reader: nil}}
   end
 
+  # A :read_timeout with nobody waiting for it. The timer fired just as the
+  # event it was bounding arrived, or a second read/2 replaced the reader and
+  # orphaned the first one's timer. Either way there is no caller to answer, and
+  # crashing here would kill the running program and lose every queued event.
+  def handle_info(:read_timeout, state), do: {:noreply, state}
+
   # Hands an event to a waiting reader, or queues it until one asks.
-  defp record(%{reader: nil} = state, event) do
+  defp deliver_or_queue(%{reader: nil} = state, event) do
     {:noreply, %{state | events: :queue.in(event, state.events)}}
   end
 
-  defp record(%{reader: {from, timer}} = state, {:exit, _} = event) do
-    cancel_read_timer(timer)
+  defp deliver_or_queue(%{reader: {from, timer}} = state, {:exit, _} = event) do
+    _ = cancel_read_timer(timer)
     GenServer.reply(from, {:ok, event})
     {:stop, :normal, %{state | reader: nil}}
   end
 
-  defp record(%{reader: {from, timer}} = state, event) do
-    cancel_read_timer(timer)
+  defp deliver_or_queue(%{reader: {from, timer}} = state, event) do
+    _ = cancel_read_timer(timer)
     GenServer.reply(from, {:ok, event})
     {:noreply, %{state | reader: nil}}
   end
 
-  defp read_timer(:infinity), do: nil
-  defp read_timer(timeout), do: Process.send_after(self(), :read_timeout, timeout)
+  defp start_read_timer(:infinity), do: nil
+  defp start_read_timer(timeout), do: Process.send_after(self(), :read_timeout, timeout)
 
   defp cancel_read_timer(nil), do: :ok
-  defp cancel_read_timer(timer), do: Process.cancel_timer(timer)
 
-  defp exec_run_options(opts) do
+  # Cancelling does not unsend: a timer that has already fired leaves its
+  # message in the mailbox, where it would be handled after the reader is gone.
+  defp cancel_read_timer(timer) do
+    _ = Process.cancel_timer(timer)
+
+    receive do
+      :read_timeout -> :ok
+    after
+      0 -> :ok
+    end
+  end
+
+  defp build_exec_options(opts) do
     stdin? = Keyword.get(opts, :stdin, true)
     stdout? = Keyword.get(opts, :stdout, true)
     stderr? = Keyword.get(opts, :stderr, true)
 
-    proplist = [:link]
+    # :link is what makes erlexec reap the program when this process dies; see
+    # the module comment above.
+    #
+    # {:group, 0} puts the program in a new process group of its own, and
+    # :kill_group makes erlexec signal that whole group rather than the single
+    # pid it tracked. Both are needed, and only together.
+    #
+    # A string command is interpreted by /bin/sh, which may run the program as a
+    # child rather than becoming it. Signalling only the tracked pid then kills
+    # the shell and leaves the program orphaned to init -- so stop/1 returns :ok
+    # while the program keeps running. Signalling the group reaches the program
+    # whichever shape the shell chose.
+    #
+    # :kill_group without {:group, 0} would signal erlexec's own process group,
+    # killing the VM-wide exec-port and every other running program with it.
+    proplist = [:link, :kill_group, {:group, 0}]
     proplist = if stdin?, do: [:stdin | proplist], else: proplist
     proplist = if stdout?, do: [:stdout | proplist], else: proplist
     proplist = if stderr?, do: [:stderr | proplist], else: proplist
 
-    run_opts =
-      Keyword.take(opts, [
-        :executable,
-        :cd,
-        :env,
-        :kill,
-        :kill_timeout,
-        :group,
-        :user,
-        :nice,
-        :success_exit_code,
-        :winsz,
-        :pty,
-        :capabilities,
-        :debug
-      ])
+    # Only the three stream flags read just above are dropped. Exec.open/2 has
+    # already taken :owner and :timeout, which never reach this module.
+    #
+    # :group is deliberately absent: this module sets it, and a caller
+    # overriding it would silently break the lifetime guarantee above.
+    run_opts = Keyword.drop(opts, [:stdin, :stdout, :stderr])
 
     proplist ++ run_opts
   end
 
-  defp exit_status(status) do
+  defp decode_exit_reason(status) do
     case status do
       :normal -> 0
       {:exit_status, raw} when Bitwise.band(raw, 0xFF) === 0 -> Bitwise.bsr(raw, 8)
-      {:exit_status, raw} -> {:signal, :exec.signal(Bitwise.band(raw, 0x7F))}
+      {:exit_status, raw} -> raw |> Bitwise.band(0x7F) |> :exec.signal() |> then(&{:signal, &1})
       other -> other
     end
   end

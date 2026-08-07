@@ -1,0 +1,17 @@
+# Folders Docker must not copy into the image, listed here because Docker only
+# reads this file from the build context root.
+#
+# deps and _build hold dependencies compiled for macOS. The image runs Linux, so
+# those files cannot execute in it, and docker/Dockerfile builds its own copies
+# inside the image instead.
+deps
+_build
+
+# Build products of `mix docs` and `mix dialyzer`, and the editor's index. None
+# is needed to run the tests.
+doc
+dialyzer
+.elixir_ls
+
+# Version control history. Large, and nothing in the image reads it.
+.git

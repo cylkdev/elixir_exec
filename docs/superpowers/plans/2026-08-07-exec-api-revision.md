@@ -8,6 +8,12 @@
 
 **Tech Stack:** Elixir `~> 1.18`, ExUnit, `:erlexec ~> 2.3`, Credo (`blitz_credo_checks`), Dialyxir, ExCoveralls, ExDoc.
 
+## Execution order
+
+**0 → 11 → 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9 → 10.**
+
+Task 11 is numbered out of sequence because it was added after the plan was written, and the brief extractor cannot address a fractional task number. It is placed in document order immediately after Task 0 and must run before Task 1: it fixes defects in `lib/` that Task 8 would otherwise document as though they were correct behaviour.
+
 ## Global Constraints
 
 - Spec: `docs/superpowers/specs/2026-08-07-exec-api-revision-design.md`. Read it before Task 0.
@@ -57,6 +63,7 @@ This task comes first so that a failure in it is a Dockerfile problem and never 
 - Create: `docker/fixtures/ignores-sigterm`
 - Create: `docker/test`
 - Create: `.dockerignore` (repository root — Docker reads it only from the build context root, so it cannot live in `docker/`)
+- Modify: `mix.exs` (one dependency line)
 - Test: `test/elixir_exec_test.exs` (one test added; the file is renamed in Task 1)
 
 **Interfaces:**
@@ -66,6 +73,37 @@ This task comes first so that a failure in it is a Dockerfile problem and never 
 - [ ] **Step 1: Write `docker/Dockerfile`**
 
 Use the file agreed in the design session. Every instruction is commented for a reader who does not already know Docker, and every path is named literally. Base image `hexpm/elixir:1.18.4-erlang-27.3.4-debian-bookworm-20250428-slim`; installs `build-essential` and `procps`; creates and switches to an unprivileged user `app`; sets `ENV SHELL=/bin/sh` and `ENV MIX_ENV=test`; copies `mix.exs` and `mix.lock` and compiles dependencies *before* copying `lib` and `test`; copies `docker/fixtures` to `/usr/local/fixtures`; ends with `CMD ["mix", "test"]`.
+
+Add one instruction that was not in the design sketch, immediately after `RUN mix deps.compile`:
+
+```dockerfile
+# Builds Dialyzer's lookup tables, the PLTs, and stores them in the image.
+#
+# `mix dialyzer` cannot type-check anything until it has catalogued every
+# function in Erlang/OTP and in this project's dependencies. Building that
+# catalogue takes several minutes. Every `docker run` starts a fresh container
+# and throws away whatever the previous one wrote, so without this instruction
+# that catalogue would be rebuilt from nothing on every single run.
+#
+# Building it here instead makes it part of the image, and Docker only repeats
+# this instruction when mix.exs or mix.lock change. The paths it writes to,
+# /app/dialyzer, come from the `dialyzer:` key in mix.exs.
+#
+# It runs before lib/ is copied on purpose: the PLTs describe OTP and the
+# dependencies, never this project's own code, so copying lib/ first would only
+# make this slow step repeat whenever a source file changed.
+RUN mix dialyzer --plt
+```
+
+- [ ] **Step 1b: Make ex_doc available in the test environment**
+
+`mix.exs` currently declares `{:ex_doc, ">= 0.0.0", only: :dev, runtime: false}`. The image sets `MIX_ENV=test`, so ex_doc would not be installed and `docker/test mix docs` — used in Task 9 to catch `@doc` cross-references to renamed functions — would fail.
+
+Change that one line to match how credo and dialyxir are already declared:
+
+```elixir
+      {:ex_doc, ">= 0.0.0", only: [:dev, :test], runtime: false}
+```
 
 - [ ] **Step 2: Write `docker/fixtures/ignores-sigterm` and make it executable**
 
@@ -202,6 +240,239 @@ declares them instead, and docker/test runs the suite inside it.
 
 Adds a fixture that ignores SIGTERM, so stop/1's documented escalation to
 SIGKILL is covered for the first time.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
+### Task 11: Make the lifetime guarantee true (runs before Task 1)
+
+Task 0's container run exposed a defect that the developer's Mac had been hiding. This task fixes it, and clears four pre-existing Credo failures while it is in the same files.
+
+**The defect.** `:erlexec` runs a *string* command by handing it to `$SHELL`. zsh and bash replace themselves when the string is a single simple command, so the process erlexec tracks *is* the program. Debian's `/bin/sh` is dash, which forks instead — so erlexec tracks the shell, and the program is a grandchild it knows nothing about. Everything the library reports then describes the shell:
+
+| Caller does | Library reports | Actually happened |
+|---|---|---|
+| `stop/1` | `:ok`, then `{:exit, 0}` | program still running |
+| owner process dies | (guarantee: program stopped) | program orphaned to PID 1 |
+| program killed by `SIGTERM` | `{:stderr, "Terminated\n"}` | shell's diagnostic injected into the caller's stderr; no `{:signal, _}` |
+
+Observed process tree inside the container:
+
+```
+63  20  63  exec-port
+64  63  63  /bin/sh -c sleep 111.777     <- erlexec tracks this
+65  64  63  sleep 111.777                <- the real program, never killed
+```
+
+**The fix, in two parts.** Both are required; neither is sufficient alone.
+
+1. **The library names the shell instead of inheriting it.** A string command becomes `["/bin/sh", "-c", command]`, built here and passed to erlexec as list form, so `$SHELL` is never consulted and the process tree is the same on every machine. This is what `System.shell/2` does in Elixir's standard library.
+2. **The program gets its own process group, and signals go to the group.** `{:group, 0}` places it in a new group; `:kill_group` makes erlexec signal that group rather than the single tracked pid. Measured: baseline → orphaned; `{:group, 0}` alone → orphaned; both together → reaped.
+
+> #### Do not pass `:kill_group` without `{:group, 0}`
+>
+> `:kill_group` alone signals erlexec's *own* process group, which kills the VM-wide `exec-port` singleton and every other running program with it. Observed as `exit_status 137` during investigation. The two options are only correct together.
+
+**Files:**
+- Modify: `lib/elixir_exec.ex` (command normalization)
+- Modify: `lib/elixir_exec/connection.ex` (exec options; one Credo fix)
+- Modify: `lib/mix/tasks/elixir_exec.setup_user.ex` (two Credo fixes)
+- Modify: `docker/Dockerfile` (remove the now-inaccurate `ENV SHELL`)
+- Test: `test/elixir_exec_test.exs`
+
+**Interfaces:**
+- Consumes: the container from Task 0.
+- Produces: `ElixirExec.run/2` accepts the same command forms as before. `:group` is no longer a forwardable option — the library owns it. Later tasks must not reintroduce it: **Task 5's forwarded-option list and Task 8's `t:options/0` typedoc must both omit `:group`.**
+
+- [ ] **Step 1: Write the failing regression tests**
+
+Add to `test/elixir_exec_test.exs` a new `describe` block. `unique_token/0` and `await_os_process/2` already exist at the bottom of the file — reuse them, do not write new helpers.
+
+```elixir
+  describe "process lifetime of shell commands" do
+    # A string command is interpreted by a shell, and a shell may run the
+    # program as a child rather than becoming it. These tests pin the outcome
+    # the caller cares about -- the program is gone -- rather than the
+    # mechanism, which differs between shells.
+    test "stop/1 ends the program itself, not merely the shell that started it" do
+      token = unique_token()
+      {:ok, conn} = ElixirExec.run("sleep #{token}")
+
+      assert await_os_process(token, :present)
+      assert ElixirExec.stop(conn) === :ok
+      assert await_os_process(token, :absent)
+    end
+
+    test "kill/2 reaches the program itself" do
+      token = unique_token()
+      {:ok, conn} = ElixirExec.run("sleep #{token}")
+
+      assert await_os_process(token, :present)
+      assert ElixirExec.kill(conn, 9) === :ok
+      assert await_os_process(token, :absent)
+    end
+  end
+```
+
+- [ ] **Step 2: Run them and confirm they fail**
+
+Run: `docker/test mix test test/elixir_exec_test.exs`
+
+Expected: the two new tests FAIL with `the OS process for \`sleep NNN\` was never absent`, and the two pre-existing `describe "lifetime"` tests fail with the same message. Four failures in total.
+
+If the two new tests *pass* before any fix, stop and report: the defect did not reproduce and the rest of this task is unfounded.
+
+- [ ] **Step 3: Name the shell in `lib/elixir_exec.ex`**
+
+Replace the two `normalize_command/1` clauses at the bottom of the file. The existing comment above them, about erlexec's argv builder only accepting binaries and lists, stays and still applies.
+
+```elixir
+  # erlexec builds the argv with a function accepting only binaries and lists
+  # (exec.erl:1356); anything else raises function_clause inside the :exec
+  # singleton, which is VM-wide and would take every other running program with
+  # it.
+  defp normalize_command(command) when is_list(command) do
+    command |> Enum.map(&to_string/1) |> resolve_command()
+  end
+
+  # A string is a shell script, so something has to interpret it. Left to
+  # itself erlexec passes the string to $SHELL, which makes the process tree
+  # depend on the machine: zsh and bash replace themselves when the script is a
+  # single simple command, while dash -- /bin/sh on Debian -- forks and runs the
+  # program as a child. That difference decides whether the process this library
+  # tracks is the program or only its parent, and with it whether stop/1 and the
+  # lifetime guarantee mean anything. Naming /bin/sh here settles it the same way
+  # everywhere, as System.shell/2 does.
+  defp normalize_command(command), do: ["/bin/sh", "-c", to_string(command)]
+```
+
+Then delete the now-dead call to `resolve_command/1` from `run/2`, since `normalize_command/1` performs it:
+
+```elixir
+  def run(command, options \\ []) do
+    {owner, options} = Keyword.pop(options, :owner, self())
+    command = normalize_command(command)
+    ConnectionSupervisor.start_supervised_connection(command, owner, options)
+  end
+```
+
+`resolve_command/1` itself is unchanged and still has both clauses; list commands still reach it, so `["echo", "hi"]` still resolves `echo` against `PATH`.
+
+- [ ] **Step 4: Give the program its own process group in `lib/elixir_exec/connection.ex`**
+
+In `exec_run_options/1`, replace the `proplist = [:link]` line:
+
+```elixir
+    # :link is what makes erlexec reap the program when this process dies; see
+    # the module comment above.
+    #
+    # {:group, 0} puts the program in a new process group of its own, and
+    # :kill_group makes erlexec signal that whole group rather than the single
+    # pid it tracked. Both are needed, and only together.
+    #
+    # A string command is interpreted by /bin/sh, which may run the program as a
+    # child rather than becoming it. Signalling only the tracked pid then kills
+    # the shell and leaves the program orphaned to init -- so stop/1 returns :ok
+    # while the program keeps running. Signalling the group reaches the program
+    # whichever shape the shell chose.
+    #
+    # :kill_group without {:group, 0} would signal erlexec's own process group,
+    # killing the VM-wide exec-port and every other running program with it.
+    proplist = [:link, :kill_group, {:group, 0}]
+```
+
+Then remove `:group` from the `Keyword.take/2` list further down the same function, and add a comment where it was:
+
+```elixir
+    # :group is deliberately absent: this module sets it, and a caller
+    # overriding it would silently break the lifetime guarantee above.
+    run_opts =
+      Keyword.take(opts, [
+        :executable,
+        :cd,
+        :env,
+        :kill,
+        :kill_timeout,
+        :user,
+        :nice,
+        :success_exit_code,
+        :winsz,
+        :pty,
+        :capabilities,
+        :debug
+      ])
+```
+
+- [ ] **Step 5: Run the tests and confirm all four now pass**
+
+Run: `docker/test mix test test/elixir_exec_test.exs`
+Expected: PASS, 0 failures — the two new tests and the two pre-existing `describe "lifetime"` tests.
+
+Test count should be 2 doctests, 31 tests, 0 failures.
+
+- [ ] **Step 6: Remove the now-inaccurate `ENV SHELL` from `docker/Dockerfile`**
+
+The image pinned `SHELL=/bin/sh` so that erlexec would not inherit a different shell from the surrounding machine. After Step 3 the library never consults `$SHELL`, so that instruction no longer does anything and its comment now describes behaviour that does not exist.
+
+Delete the `ENV SHELL=/bin/sh` line and the entire comment block above it, and put this in its place:
+
+```dockerfile
+# There is deliberately no `ENV SHELL` here. An earlier version of this file set
+# it, because erlexec decides which shell interprets a string command by reading
+# $SHELL, and leaving that to the surrounding machine made the tests behave
+# differently on a Mac than on Debian. The library now names /bin/sh itself when
+# it builds the command, so $SHELL is never read and pinning it here would only
+# suggest, falsely, that something depends on it.
+```
+
+- [ ] **Step 7: Clear the four pre-existing Credo failures**
+
+These predate Task 0 (confirmed with `git stash` against the base commit) and block the plan's constraint that `mix credo --strict` pass at the end of every task. All four are one-line changes.
+
+1. `lib/mix/tasks/elixir_exec.setup_user.ex:37` — `!=` should be `!==`.
+2. `lib/mix/tasks/elixir_exec.setup_user.ex:44` — a pipeline only one function long; call the function directly instead.
+3. `lib/elixir_exec/connection.ex:199` — nested function calls inside `exit_status/1`; rewrite that clause's guard body as a pipeline. Note Task 7 renames this function to `decode_exit_reason/1`; do not rename it here.
+4. `test/elixir_exec_test.exs:221` — nested function calls in `await_os_process/3`; rewrite as a pipeline.
+
+Run `docker/test mix credo --strict` and read the exact messages before editing; fix what it names rather than what this list summarises.
+
+- [ ] **Step 8: Full verification**
+
+```bash
+docker/test mix format --check-formatted
+docker/test
+docker/test mix credo --strict
+docker/test mix dialyzer
+```
+Expected: all pass, 0 test failures, Credo reporting no issues.
+
+- [ ] **Step 9: Commit**
+
+Two commits, so the behaviour fix and the lint cleanup stay separable:
+
+```bash
+git add lib/elixir_exec.ex lib/elixir_exec/connection.ex test/elixir_exec_test.exs docker/Dockerfile
+git commit -m "fix: make the lifetime guarantee true for shell commands
+
+erlexec hands a string command to \$SHELL. zsh and bash replace themselves
+for a single simple command, so the tracked pid is the program; dash forks,
+so the tracked pid is the shell and the program is an untracked grandchild.
+stop/1 then returned :ok while the program kept running, and owner death
+orphaned it to init.
+
+The library now names /bin/sh itself, as System.shell/2 does, and runs the
+program in its own process group so signals reach it whichever shape the
+shell chose.
+
+Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
+
+git add lib/mix/tasks/elixir_exec.setup_user.ex lib/elixir_exec/connection.ex test/elixir_exec_test.exs
+git commit -m "style: clear pre-existing Credo findings
+
+Four findings that predate this branch and blocked the requirement that
+mix credo --strict pass at the end of every task.
 
 Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 ```
@@ -381,7 +652,11 @@ In `test/exec_test.exs`:
 - In `describe "stop/1 and kill/2"` → `describe "stop/1 and signal/2"`; change `Exec.run(` to `Exec.open(` and `Exec.kill(conn, 9)` to `Exec.signal(program, 9)`.
 - Rename `describe "capture/2"` to `describe "run/2"` and change every `Exec.capture(` to `Exec.run(`.
 - In `describe "stream/2"` → `describe "stream!/2"`, change every `Exec.stream(` to `Exec.stream!(`.
-- In `describe "lifetime"`, change `Exec.run(` to `Exec.open(` and `Process.whereis(Exec.ConnectionSupervisor)` to `Process.whereis(Exec.ProgramSupervisor)` if Task 1's sweep missed it.
+- In `describe "lifetime"`, change `Exec.run(` to `Exec.open(`. `Process.whereis(Exec.ProgramSupervisor)` is already correct — Task 1 handled it.
+- In `describe "process lifetime of shell commands"` — added by Task 11, after this plan text was written — change both `Exec.run(` to `Exec.open(`, rename the `conn` bindings to `program`, and change `Exec.kill(conn, 9)` to `Exec.signal(program, 9)`. The two tests there are `"stop/1 ends the program itself, not merely the shell that started it"` and `"kill/2 reaches the program itself"`; rename the second to `"signal/2 reaches the program itself"` so the test name matches the function it exercises.
+- In `describe "stop/1 and kill/2"`, note that Task 11 added a third test, `"stop/1 ends a program that ignores SIGTERM"`, which also needs `Exec.run(` → `Exec.open(`.
+
+After this task no test should call `Exec.run/2` expecting a handle back. Verify with `grep -n 'Exec.run(' test/exec_test.exs` — every remaining match must be inside the `describe "run/2"` block (renamed from `capture/2`), where `run/2` now means run-to-completion.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -397,10 +672,12 @@ Rename the old `run/2` to `open/2` — the `@doc`, both `@spec` lines, and the `
   @spec open(binary() | [binary()], options()) :: {:ok, t()} | {:error, term()}
   def open(command, options \\ []) do
     {owner, options} = Keyword.pop(options, :owner, self())
-    command = command |> normalize_command() |> resolve_command()
+    command = normalize_command(command)
     ProgramSupervisor.start_program(command, owner, options)
   end
 ```
+
+Only the function name and its two `@spec`s change here. The body is already what is shown: Task 11 folded the `resolve_command/1` call into `normalize_command/1`'s list clause, so `open/2` calls `normalize_command/1` alone. Do not reintroduce a pipeline through `resolve_command/1`.
 
 Rename `capture/2` to `run/2`:
 
@@ -694,7 +971,7 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 Option groups, from the spec:
 
 - Handled by `Exec` itself: `:timeout` (`run/2` only), `:owner`, `:stdin`, `:stdout`, `:stderr`.
-- Forwarded to `:exec.run/2`: `:executable`, `:cd`, `:env`, `:kill`, `:kill_timeout`, `:group`, `:user`, `:nice`, `:success_exit_code`, `:winsz`, `:pty`, `:capabilities`, `:debug`.
+- Forwarded to `:exec.run/2`: `:executable`, `:cd`, `:env`, `:kill`, `:kill_timeout`, `:user`, `:nice`, `:success_exit_code`, `:winsz`, `:pty`, `:capabilities`, `:debug`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -749,7 +1026,6 @@ In `lib/exec.ex`, add the two option lists as module attributes near the top, af
     :env,
     :kill,
     :kill_timeout,
-    :group,
     :user,
     :nice,
     :success_exit_code,
@@ -766,7 +1042,7 @@ Rewrite `open/2` to validate before starting:
   def open(command, options \\ []) do
     validate_options!(options)
     {owner, options} = Keyword.pop(options, :owner, self())
-    command = command |> normalize_command() |> resolve_command()
+    command = normalize_command(command)
     ProgramSupervisor.start_program(command, owner, options)
   end
 
@@ -782,6 +1058,8 @@ Rewrite `open/2` to validate before starting:
   end
 ```
 
+Note that `:group` appears in neither list, deliberately. Task 11 made the library set the program's process group itself, because a caller overriding it silently breaks the lifetime guarantee. A caller passing `group:` therefore now gets an `ArgumentError`, which is the intended outcome — do not add `:group` to `@forwarded_options` to make that go away.
+
 - [ ] **Step 4: Turn erlexec's `{:invalid_option, _}` into an `ArgumentError`**
 
 An invalid *value* is only detectable by erlexec, and it surfaces as a start failure from `:exec.run/2`, which `Exec.Program.init/1` turns into `{:stop, reason}`. Convert it in `open/2` where the supervisor's result is returned:
@@ -790,7 +1068,7 @@ An invalid *value* is only detectable by erlexec, and it surfaces as a start fai
   def open(command, options \\ []) do
     validate_options!(options)
     {owner, options} = Keyword.pop(options, :owner, self())
-    command = command |> normalize_command() |> resolve_command()
+    command = normalize_command(command)
 
     case ProgramSupervisor.start_program(command, owner, options) do
       {:ok, program} -> {:ok, program}
@@ -995,8 +1273,10 @@ Pure rename. No test changes — if a test needs editing, something behavioural 
 | `stream_teardown/1` | `stop_unless_exited/1` |
 | `split_lines/1` | `split_complete_lines/1` |
 | `flush/2` | `trailing_line/2` |
-| `normalize_command/1` | `command_to_binaries/1` |
+| `normalize_command/1` | `to_argv/1` |
 | `resolve_command/1` | `resolve_executable_path/1` |
+
+`normalize_command/1` was going to become `command_to_binaries/1`, which described what it did when this plan was written. Task 11 changed the function: it now wraps a string command as `["/bin/sh", "-c", command]` and resolves a bare executable name against `PATH` for list commands. What it returns is the argv erlexec will execute, so `to_argv/1` is what it does. `command_to_binaries/1` would be doubly wrong — it does more than convert, and for a string command it does not convert to binaries at all.
 
 | In `lib/exec/program.ex` | New name |
 |---|---|
@@ -1009,15 +1289,19 @@ Pure rename. No test changes — if a test needs editing, something behavioural 
 
 - [ ] **Step 1: Rename in `lib/exec.ex`**
 
+> #### Use `perl`, not `sed`
+>
+> macOS ships BSD `sed`, which does **not** support the `\b` word-boundary escape. It does not error on it — it silently matches nothing, so every substitution below would appear to succeed while changing no files. This was observed for real in Task 1. `perl -pi -e` honours `\b` on every platform. Verify with `grep` afterwards regardless.
+
 ```bash
-sed -i '' \
-  -e 's/\bcollect\b/read_until_exit/g' \
-  -e 's/\bstream_next\b/emit_lines/g' \
-  -e 's/\bstream_teardown\b/stop_unless_exited/g' \
-  -e 's/\bsplit_lines\b/split_complete_lines/g' \
-  -e 's/\bnormalize_command\b/command_to_binaries/g' \
-  -e 's/\bresolve_command\b/resolve_executable_path/g' \
-  -e 's/\btime_left\b/remaining_timeout/g' \
+perl -pi \
+  -e 's/\bcollect\b/read_until_exit/g;' \
+  -e 's/\bstream_next\b/emit_lines/g;' \
+  -e 's/\bstream_teardown\b/stop_unless_exited/g;' \
+  -e 's/\bsplit_lines\b/split_complete_lines/g;' \
+  -e 's/\bnormalize_command\b/to_argv/g;' \
+  -e 's/\bresolve_command\b/resolve_executable_path/g;' \
+  -e 's/\btime_left\b/remaining_timeout/g;' \
   lib/exec.ex
 ```
 
@@ -1029,10 +1313,10 @@ sed -i '' \
 - [ ] **Step 2: Rename in `lib/exec/program.ex`**
 
 ```bash
-sed -i '' \
-  -e 's/\brecord\b/deliver_or_queue/g' \
-  -e 's/\bread_timer\b/start_read_timer/g' \
-  -e 's/\bexec_run_options\b/build_exec_options/g' \
+perl -pi \
+  -e 's/\brecord\b/deliver_or_queue/g;' \
+  -e 's/\bread_timer\b/start_read_timer/g;' \
+  -e 's/\bexec_run_options\b/build_exec_options/g;' \
   lib/exec/program.ex
 ```
 
@@ -1052,11 +1336,13 @@ Rename `exit_status/1` to `decode_exit_reason/1` by hand — `exit_status` also 
     case status do
       :normal -> 0
       {:exit_status, raw} when Bitwise.band(raw, 0xFF) === 0 -> Bitwise.bsr(raw, 8)
-      {:exit_status, raw} -> {:signal, :exec.signal(Bitwise.band(raw, 0x7F))}
+      {:exit_status, raw} -> raw |> Bitwise.band(0x7F) |> :exec.signal() |> then(&{:signal, &1})
       other -> other
     end
   end
 ```
+
+The third clause is shown in its current pipeline form. Task 11 rewrote it that way to satisfy Credo's `NestedFunctionCalls` check; reverting it to the nested call would fail `mix credo --strict`. Only the function name changes here.
 
 And its one call site in `handle_info({:EXIT, _controller, reason}, state)`:
 
@@ -1102,7 +1388,18 @@ Third-person indicative throughout. Sections in `System`'s order. Rationale move
 
 **Files:**
 - Modify: `lib/exec.ex` (`@moduledoc`, every `@doc`, both `@typedoc`s)
+- Modify: `lib/mix/tasks/elixir_exec.setup_user.ex` (one dangling doc reference — see Step 0)
 - Test: `test/exec_test.exs` (doctests run from `doctest Exec`)
+
+- [ ] **Step 0: Fix the dangling reference in the Mix task's documentation**
+
+`lib/mix/tasks/elixir_exec.setup_user.ex:14` contains a documentation example calling `ElixirExec.capture("whoami", user: "elixir_exec")`. Both halves are now wrong: the module is `Exec` and the function is `run/2`. Change it to:
+
+```elixir
+      Exec.run("whoami", user: "elixir_exec")
+```
+
+The module's own name, `Mix.Tasks.ElixirExec.SetupUser` on line 1, is deliberately unchanged — it derives from the Mix task name `mix elixir_exec.setup_user`, which is package-scoped and stays. Change only the example.
 
 **Interfaces:**
 - Consumes: the final API from Tasks 1–7.
@@ -1131,21 +1428,24 @@ Write the documentation exactly as below.
 
   ## Command forms
 
-  A command is either a binary, which a shell parses, or a list of binaries,
-  which is passed to `execve` directly with no shell involved:
+  A command is either a binary, run as `/bin/sh -c command`, or a list of
+  binaries, passed to `execve` directly with no shell involved:
 
-      Exec.run("ls -l | wc -l")   # a shell handles PATH, pipes and redirection
+      Exec.run("ls -l | wc -l")   # /bin/sh handles PATH, pipes and redirection
       Exec.run(["echo", "hi"])    # no shell, no expansion, no interpolation
 
   In list form a bare executable name is resolved against `PATH` first, so
   `["echo", "hi"]` behaves as `"echo hi"` does. A name containing `/` is used
   exactly as given.
 
+  `/bin/sh` is named explicitly rather than taken from `$SHELL`, so a binary
+  command behaves the same way on every machine.
+
   > #### Watch out {: .warning}
   >
-  > The binary form is parsed by a shell, so never pass untrusted input to it.
-  > `Exec.run("cat \#{user_input}")` runs whatever the input says. Use the list
-  > form, which does not involve a shell, whenever any part of the command comes
+  > A binary command is interpreted by a shell, so never pass untrusted input to
+  > it. `Exec.run("cat \#{user_input}")` runs whatever the input says. Use the
+  > list form, which involves no shell, whenever any part of the command comes
   > from outside the application.
 
   ## Lifetime
@@ -1155,11 +1455,33 @@ Write the documentation exactly as below.
   for `run/2`, `stream!/2` and `open/2` alike, and does not survive the VM
   itself going down.
 
+  Each program runs in a process group of its own, and `stop/1` and `signal/2`
+  act on that group. A binary command therefore takes the shell and everything
+  the shell started with it, rather than leaving the real work orphaned.
+
   The reverse does not hold: a program that fails or exits non-zero does not
   disturb the process that started it.
 
   Pass `owner: pid` to tie a program's lifetime to a process other than the
   caller.
+
+  ## Exit status of a binary command
+
+  A binary command reports the exit status of `/bin/sh`, which is not always the
+  exit status of the program inside it. A shell that ran a single program exits
+  with that program's code, but a program killed by a signal makes the shell
+  exit `128 + signal`, and the shell writes its own diagnostic to standard
+  error. Terminating `sleep 30` produces:
+
+      {:stderr, "Terminated\\n"}
+      {:exit, 143}
+
+  That `"Terminated\\n"` comes from the shell, not from the program.
+
+  List form has no shell in between, reports the program's own status as
+  `{:signal, name}`, and adds nothing to standard error:
+
+      {:exit, {:signal, :sigterm}}
 
   ## Failure to launch
 
@@ -1194,7 +1516,7 @@ Write the documentation exactly as below.
       produces no `{:stdout, _}` events at all.
 
   Forwarded to the underlying runner unchanged: `:executable`, `:cd`, `:env`,
-  `:kill`, `:kill_timeout`, `:group`, `:user`, `:nice`, `:success_exit_code`,
+  `:kill`, `:kill_timeout`, `:user`, `:nice`, `:success_exit_code`,
   `:winsz`, `:pty`, `:capabilities` and `:debug`. See
   [erlexec](https://hexdocs.pm/erlexec/exec.html) for their meanings.
 
@@ -1490,11 +1812,13 @@ docker/test mix hex.build
 ```
 Expected: succeeds and reports a file list that includes `LICENSE`. The `.tar` it writes needs no cleanup — it is written inside the container, which `docker/test` deletes on exit.
 
-Note that `docker/Dockerfile` copies `lib`, `test`, `mix.exs`, `mix.lock` and the three dotfile configs into the image, but not `README.md` or `LICENSE`. Add both to the Dockerfile in this step, since `mix.exs` lists them in `:files` and `mix hex.build` fails without them:
+Note that `docker/Dockerfile` copies `lib`, `test`, `mix.exs`, `mix.lock`, the three dotfile configs and `README.md` into the image, but not `LICENSE`. Task 8 added the `README.md` line so `mix docs` could run in the container; extend it here so `mix hex.build` can find the licence file too:
 
 ```dockerfile
-# README.md and LICENSE are listed in the `files:` key of mix.exs, so
-# `mix hex.build` refuses to package the project unless both are present.
+# README.md is rendered into the generated documentation by `mix docs`, which
+# mix.exs configures through its `extras:` key. Both files are also named in
+# mix.exs's `files:` key, so `mix hex.build` refuses to package the project
+# unless each is present.
 COPY --chown=app:app README.md LICENSE ./
 ```
 
@@ -1511,6 +1835,8 @@ Rules for the rewrite:
 - Keep the Installation, Configuration and non-root-user sections largely as they are; they are accurate. Update the `ElixirExec.capture("whoami", user: "elixir_exec")` example to `Exec.run("whoami", user: "elixir_exec")`.
 - Add to the Options section that an unrecognised option raises `ArgumentError` — the previous README stated the opposite ("neither filters nor validates them").
 - Add a short "Failure to launch" note under Command forms: a missing executable is a non-zero exit with a stderr diagnostic, not `{:error, _}`.
+- **Document the `$SHELL` requirement**, discovered in Task 11. Under Configuration or Installation, state that `SHELL` must be set to a non-empty value in the environment or `:erlexec` will not start at all — `exec-port` exits with status 4 (`deps/erlexec/c_src/exec.cpp:626`), and the resulting crash names neither this library nor the caller's code. Name the environments where this bites: systemd units, containers, and cron, none of which set `SHELL` by default. Say explicitly that this is *not* about which shell interprets a string command — the library names `/bin/sh` itself — so a reader does not conclude that setting `SHELL` changes command behaviour.
+- Under Command forms, state that a string command runs `/bin/sh -c`, that the handle therefore owns a process group rather than a single process, and that the exit status of a string command is the shell's — so a program killed by a signal surfaces as the shell's `128 + n` exit code rather than `{:signal, _}`. List form has none of these properties.
 - **Rewrite the Development section around `docker/test`.** It currently lists `mix test`, `mix credo --strict`, `mix dialyzer`, `mix coveralls` and `mix docs` as host commands. Replace them with their `docker/test` equivalents, and state plainly that Docker is the only supported way to run the suite and that `mix test` on a host will fail, because `test/exec_test.exs` starts `/usr/local/fixtures/ignores-sigterm`, a program that exists only inside the image. Say why the image exists: the suite starts real operating system programs, and `docker/Dockerfile` declares which ones rather than trusting the developer's machine to have them.
 - Add `docker/Dockerfile`, `docker/fixtures/ignores-sigterm`, `docker/test` and `.dockerignore` to whatever file-layout description the Development section carries, so a newcomer can find them.
 
