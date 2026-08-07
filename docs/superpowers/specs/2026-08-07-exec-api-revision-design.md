@@ -208,7 +208,7 @@ Options split into two groups.
 corrects a current asymmetry where `:timeout` was silently ignored elsewhere.
 
 **Forwarded to erlexec:** `:executable`, `:cd`, `:env`, `:kill`, `:kill_timeout`,
-`:group`, `:user`, `:nice`, `:success_exit_code`, `:winsz`, `:pty`, `:capabilities`,
+`:user`, `:nice`, `:success_exit_code`, `:winsz`, `:pty`, `:capabilities`,
 `:debug`. Each documented in the library's own words with its type and default,
 rather than a link to erlexec's documentation.
 
@@ -358,6 +358,67 @@ These are written into the plan as assumptions to be replaced with observed valu
    it before the renaming work is stacked on top.
 3. Whether dash's `printf` accepts `\377` octal escapes (`\xff` is not POSIX).
 4. The shape erlexec expects for `env:` — `[{"FOO", "bar"}]` or charlists.
+
+## Part 5 — Defects the container exposed
+
+Added after Task 0 ran the existing suite in the container for the first time. Both
+were present before this work began; neither was visible on macOS.
+
+### The lifetime guarantee was false for string commands
+
+`:erlexec` runs a string command by handing it to `$SHELL`. zsh and bash replace
+themselves when the string is a single simple command, so the process erlexec tracks
+*is* the program. Debian's `/bin/sh` is dash, which forks — so erlexec tracks the
+shell and the program is a grandchild it knows nothing about.
+
+Every guarantee the library makes then describes the shell:
+
+| Caller does | Library reports | Actually happened |
+|---|---|---|
+| `stop/1` | `:ok`, then `{:exit, 0}` | program still running |
+| owner process dies | (guarantee: program stopped) | program orphaned to PID 1 |
+| program killed by `SIGTERM` | `{:stderr, "Terminated\n"}` | shell's diagnostic injected into the caller's stderr; no `{:signal, _}` |
+| list form | correct | correct — no shell involved |
+
+Measured in the container:
+
+| Options | Outcome |
+|---|---|
+| baseline | orphaned |
+| `{:group, 0}` | orphaned |
+| `{:group, 0}` + `:kill_group` | reaped |
+
+The fix has two parts, both required:
+
+1. **The library names the shell.** A string command becomes `["/bin/sh", "-c", cmd]`,
+   built by the library and passed to erlexec as list form, so `$SHELL` is never
+   consulted and the process tree is identical on every machine. `System.shell/2` does
+   the same.
+2. **The program runs in its own process group.** `{:group, 0}` creates the group and
+   `:kill_group` makes erlexec signal it rather than one pid, so a signal reaches the
+   program whichever shape the shell chose.
+
+`:kill_group` without `{:group, 0}` signals erlexec's own process group and kills the
+VM-wide `exec-port` singleton — observed as `exit_status 137`. The options are only
+correct together.
+
+**Consequence for the API:** `:group` is no longer a forwardable option. The library
+owns it, and a caller overriding it would silently restore the defect. It is removed
+from the forwarded list in Part 2 and from the `t:options/0` documentation in Part 3.
+
+**Consequence for the documentation:** Part 3's lifetime text is now true rather than
+aspirational, and it must say what a string command actually runs — `/bin/sh -c` — and
+that the handle owns a process group. It must also say that the exit status of a string
+command is the shell's, so a program killed by a signal surfaces as the shell's
+`128 + n` exit code rather than `{:signal, _}`. That last point is a real limitation of
+running through a shell, not something this work removes.
+
+### Four pre-existing Credo failures
+
+`mix credo --strict` failed on the base commit: `!=` instead of `!==` and a
+one-function pipeline in `elixir_exec.setup_user.ex`, and nested function calls in
+`connection.ex` and in a test helper. They are fixed alongside the above so that the
+"Credo passes at the end of every task" criterion can hold.
 
 ## Success criteria
 
