@@ -407,7 +407,7 @@ Place these module attributes immediately after `@forwarded_options`, and the pr
   # platform-assigned: SIGUSR1 is 10 on Linux and 30 on Darwin, SIGCHLD 17 and
   # 20, SIGSTOP 19 and 17.
   #
-  # erlexec's own table (exec.erl:811) hardcodes the Linux numbers, so asking it
+  # erlexec's own table (exec.erl:816) hardcodes the Linux numbers, so asking it
   # to translate :sigchld on a Mac sends signal 17 -- SIGSTOP there. It also has
   # no entry at all for :sigusr1 or :sigusr2, the two signals conventionally
   # reserved for application use, and raises function_clause on any name it does
@@ -1062,6 +1062,20 @@ Insert immediately after the `## Exit status` section and before `## Failure to 
 - [ ] **Step 5: Update `README.md`**
 
 Find the `### Process groups and exit status` section. Immediately after it, add a section mirroring the moduledoc's, in the README's voice, naming the same four signals and the same one-resend behaviour. Then check the whole README for anything Tasks 2 and 3 falsified — in particular any example showing `signal/2` or `stop/1` returning something other than `:ok` or `{:error, :not_running}`.
+
+- [ ] **Step 5b: Correct the erlexec line citations in `README.md`**
+
+Task 6 pinned erlexec to 2.3.4 and corrected the citations in `lib/` and in the spec, but flagged that `README.md` carries stale ones outside its declared scope. Fix them here, since this task owns the README.
+
+Find them and check each against the vendored source at `deps/erlexec/`:
+
+```bash
+grep -n 'exec\.erl:[0-9]\|exec\.cpp:[0-9]\|exec_impl\.cpp:[0-9]' README.md
+```
+
+For each, open the cited file at the cited line and confirm it still says what the README claims. Correct the number where it has moved. If the code a citation referred to has been restructured so that no single line carries the claim, describe the location instead of inventing a line number, and say so in your report.
+
+For reference, the drift Task 6 already corrected elsewhere: `exec.erl` 1356→1362, 1204→1207, 1223→1230, 1219-1226→1224-1231, 811→816; `exec.cpp` 401→404-405. Unchanged: `exec.erl:337`, `exec.erl:1327`, `exec.cpp:152-155`, `exec.cpp:626-628`. Verify rather than assume these carry over — the README may cite different lines again.
 
 - [ ] **Step 6: Check the voice and the references**
 
