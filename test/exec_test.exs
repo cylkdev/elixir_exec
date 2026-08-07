@@ -119,11 +119,52 @@ defmodule ExecTest do
       assert Exec.read(program) === {:ok, {:exit, 0}}
     end
 
-    test "kill/2 ends the program with the signal given" do
+    test "signal/2 ends the program with the signal given" do
       {:ok, program} = Exec.open("sleep 30")
 
       assert Exec.signal(program, 9) === :ok
       assert Exec.read(program) === {:ok, {:exit, {:signal, :sigkill}}}
+    end
+
+    # The program runs in a process group of its own and both calls act on that
+    # group, so the shell a binary command goes through makes no difference to
+    # what the caller sees. Each waits for the program to be running first: a
+    # signal sent into the window between starting a command and the program
+    # replacing it is a signal to something that is not the program yet.
+    test "stop/1 reports {:exit, 0} for a binary command" do
+      token = unique_token()
+      {:ok, program} = Exec.open("sleep #{token}")
+      assert await_os_process(token, :present)
+
+      assert Exec.stop(program) === :ok
+      assert Exec.read(program) === {:ok, {:exit, 0}}
+    end
+
+    test "stop/1 reports {:exit, 0} for a list command" do
+      token = unique_token()
+      {:ok, program} = Exec.open(["sleep", token])
+      assert await_os_process(token, :present)
+
+      assert Exec.stop(program) === :ok
+      assert Exec.read(program) === {:ok, {:exit, 0}}
+    end
+
+    test "signal/2 reports {:exit, {:signal, :sigterm}} for a binary command" do
+      token = unique_token()
+      {:ok, program} = Exec.open("sleep #{token}")
+      assert await_os_process(token, :present)
+
+      assert Exec.signal(program, :sigterm) === :ok
+      assert Exec.read(program) === {:ok, {:exit, {:signal, :sigterm}}}
+    end
+
+    test "signal/2 reports {:exit, {:signal, :sigterm}} for a list command" do
+      token = unique_token()
+      {:ok, program} = Exec.open(["sleep", token])
+      assert await_os_process(token, :present)
+
+      assert Exec.signal(program, :sigterm) === :ok
+      assert Exec.read(program) === {:ok, {:exit, {:signal, :sigterm}}}
     end
 
     test "stop/1 ends a program that ignores SIGTERM" do
@@ -255,6 +296,39 @@ defmodule ExecTest do
 
       Exec.ProgramSupervisor |> Process.whereis() |> Process.exit(:kill)
 
+      assert await_os_process(token, :absent)
+    end
+
+    test "owner: keeps the program alive after the process that started it ends" do
+      me = self()
+      token = unique_token()
+
+      owner =
+        spawn(fn ->
+          receive do
+            :never -> :ok
+          end
+        end)
+
+      starter =
+        spawn(fn ->
+          {:ok, program} = Exec.open("sleep #{token}", owner: owner)
+          send(me, {:program, program})
+        end)
+
+      assert_receive {:program, program}, 5_000
+
+      starter_ref = Process.monitor(starter)
+      assert_receive {:DOWN, ^starter_ref, :process, ^starter, _reason}, 5_000
+
+      # The caller is gone and the program is not.
+      assert await_os_process(token, :present)
+      assert Process.alive?(program)
+
+      program_ref = Process.monitor(program)
+      Process.exit(owner, :kill)
+
+      assert_receive {:DOWN, ^program_ref, :process, ^program, :normal}, 10_000
       assert await_os_process(token, :absent)
     end
   end
@@ -389,7 +463,7 @@ defmodule ExecTest do
     end
   end
 
-  defp await_os_process(token, expected, attempts \\ 60)
+  defp await_os_process(token, expected, attempts \\ 150)
 
   defp await_os_process(token, expected, 0) do
     flunk("the OS process for `sleep #{token}` was never #{expected}")

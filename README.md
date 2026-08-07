@@ -271,4 +271,4 @@ Function-level documentation lives in the `@doc` attributes of `lib/exec.ex` and
 
 ## License
 
-Apache-2.0. The full text is in the [LICENSE](https://github.com/kurtome/elixir_exec/blob/main/LICENSE) file at the root of the repository, and is shipped in the Hex package.
+Apache-2.0. The full text is in the [LICENSE](LICENSE) file at the root of the repository, and is shipped in the Hex package.

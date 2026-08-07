@@ -77,7 +77,7 @@ defmodule Exec.MixProject do
     [
       main: "Exec",
       source_ref: "v#{@version}",
-      extras: ["README.md"]
+      extras: ["README.md", "LICENSE"]
     ]
   end
 end
