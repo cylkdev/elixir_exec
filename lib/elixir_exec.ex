@@ -170,7 +170,7 @@ defmodule ElixirExec do
 
       {:error, :timeout} ->
         # This call started it, so nothing else is holding it.
-        stop(conn)
+        _ = stop(conn)
         {:error, :timeout}
     end
   end

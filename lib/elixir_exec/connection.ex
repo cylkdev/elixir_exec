@@ -145,13 +145,13 @@ defmodule ElixirExec.Connection do
   end
 
   defp record(%{reader: {from, timer}} = state, {:exit, _} = event) do
-    cancel_read_timer(timer)
+    _ = cancel_read_timer(timer)
     GenServer.reply(from, {:ok, event})
     {:stop, :normal, %{state | reader: nil}}
   end
 
   defp record(%{reader: {from, timer}} = state, event) do
-    cancel_read_timer(timer)
+    _ = cancel_read_timer(timer)
     GenServer.reply(from, {:ok, event})
     {:noreply, %{state | reader: nil}}
   end
