@@ -1273,8 +1273,10 @@ Pure rename. No test changes — if a test needs editing, something behavioural 
 | `stream_teardown/1` | `stop_unless_exited/1` |
 | `split_lines/1` | `split_complete_lines/1` |
 | `flush/2` | `trailing_line/2` |
-| `normalize_command/1` | `command_to_binaries/1` |
+| `normalize_command/1` | `to_argv/1` |
 | `resolve_command/1` | `resolve_executable_path/1` |
+
+`normalize_command/1` was going to become `command_to_binaries/1`, which described what it did when this plan was written. Task 11 changed the function: it now wraps a string command as `["/bin/sh", "-c", command]` and resolves a bare executable name against `PATH` for list commands. What it returns is the argv erlexec will execute, so `to_argv/1` is what it does. `command_to_binaries/1` would be doubly wrong — it does more than convert, and for a string command it does not convert to binaries at all.
 
 | In `lib/exec/program.ex` | New name |
 |---|---|
@@ -1297,7 +1299,7 @@ perl -pi \
   -e 's/\bstream_next\b/emit_lines/g;' \
   -e 's/\bstream_teardown\b/stop_unless_exited/g;' \
   -e 's/\bsplit_lines\b/split_complete_lines/g;' \
-  -e 's/\bnormalize_command\b/command_to_binaries/g;' \
+  -e 's/\bnormalize_command\b/to_argv/g;' \
   -e 's/\bresolve_command\b/resolve_executable_path/g;' \
   -e 's/\btime_left\b/remaining_timeout/g;' \
   lib/exec.ex
@@ -1334,11 +1336,13 @@ Rename `exit_status/1` to `decode_exit_reason/1` by hand — `exit_status` also 
     case status do
       :normal -> 0
       {:exit_status, raw} when Bitwise.band(raw, 0xFF) === 0 -> Bitwise.bsr(raw, 8)
-      {:exit_status, raw} -> {:signal, :exec.signal(Bitwise.band(raw, 0x7F))}
+      {:exit_status, raw} -> raw |> Bitwise.band(0x7F) |> :exec.signal() |> then(&{:signal, &1})
       other -> other
     end
   end
 ```
+
+The third clause is shown in its current pipeline form. Task 11 rewrote it that way to satisfy Credo's `NestedFunctionCalls` check; reverting it to the nested call would fail `mix credo --strict`. Only the function name changes here.
 
 And its one call site in `handle_info({:EXIT, _controller, reason}, state)`:
 

@@ -126,7 +126,7 @@ In `Exec`:
 | `stream_teardown/1` | `stop_unless_exited/1` |
 | `split_lines/1` | `split_complete_lines/1` |
 | `flush/2` | `trailing_line/2` |
-| `normalize_command/1` | `command_to_binaries/1` |
+| `normalize_command/1` | `to_argv/1` |
 | `resolve_command/1` | `resolve_executable_path/1` |
 
 In `Exec.Program`:
