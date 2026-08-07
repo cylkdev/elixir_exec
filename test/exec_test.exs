@@ -279,6 +279,20 @@ defmodule ExecTest do
 
       assert await_program_count(before)
     end
+
+    # A read timeout that fires just as its event arrives leaves a stale
+    # :read_timeout in the mailbox with no reader to answer. Sending one
+    # directly tests the guarantee that matters: it is ignored, and the queued
+    # events survive.
+    test "a stray :read_timeout does not disturb a program with no reader waiting" do
+      {:ok, program} = Exec.open("echo hi")
+
+      send(program, :read_timeout)
+
+      assert Exec.read(program) === {:ok, {:stdout, "hi\n"}}
+      assert Process.alive?(program)
+      assert Exec.read(program) === {:ok, {:exit, 0}}
+    end
   end
 
   describe "process lifetime of shell commands" do

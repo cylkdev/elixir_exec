@@ -160,6 +160,12 @@ defmodule Exec.Program do
     {:noreply, %{state | reader: nil}}
   end
 
+  # A :read_timeout with nobody waiting for it. The timer fired just as the
+  # event it was bounding arrived, or a second read/2 replaced the reader and
+  # orphaned the first one's timer. Either way there is no caller to answer, and
+  # crashing here would kill the running program and lose every queued event.
+  def handle_info(:read_timeout, state), do: {:noreply, state}
+
   # Hands an event to a waiting reader, or queues it until one asks.
   defp deliver_or_queue(%{reader: nil} = state, event) do
     {:noreply, %{state | events: :queue.in(event, state.events)}}
@@ -181,7 +187,18 @@ defmodule Exec.Program do
   defp start_read_timer(timeout), do: Process.send_after(self(), :read_timeout, timeout)
 
   defp cancel_read_timer(nil), do: :ok
-  defp cancel_read_timer(timer), do: Process.cancel_timer(timer)
+
+  # Cancelling does not unsend: a timer that has already fired leaves its
+  # message in the mailbox, where it would be handled after the reader is gone.
+  defp cancel_read_timer(timer) do
+    _ = Process.cancel_timer(timer)
+
+    receive do
+      :read_timeout -> :ok
+    after
+      0 -> :ok
+    end
+  end
 
   defp build_exec_options(opts) do
     stdin? = Keyword.get(opts, :stdin, true)
