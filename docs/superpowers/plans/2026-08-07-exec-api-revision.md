@@ -652,7 +652,11 @@ In `test/exec_test.exs`:
 - In `describe "stop/1 and kill/2"` → `describe "stop/1 and signal/2"`; change `Exec.run(` to `Exec.open(` and `Exec.kill(conn, 9)` to `Exec.signal(program, 9)`.
 - Rename `describe "capture/2"` to `describe "run/2"` and change every `Exec.capture(` to `Exec.run(`.
 - In `describe "stream/2"` → `describe "stream!/2"`, change every `Exec.stream(` to `Exec.stream!(`.
-- In `describe "lifetime"`, change `Exec.run(` to `Exec.open(` and `Process.whereis(Exec.ConnectionSupervisor)` to `Process.whereis(Exec.ProgramSupervisor)` if Task 1's sweep missed it.
+- In `describe "lifetime"`, change `Exec.run(` to `Exec.open(`. `Process.whereis(Exec.ProgramSupervisor)` is already correct — Task 1 handled it.
+- In `describe "process lifetime of shell commands"` — added by Task 11, after this plan text was written — change both `Exec.run(` to `Exec.open(`, rename the `conn` bindings to `program`, and change `Exec.kill(conn, 9)` to `Exec.signal(program, 9)`. The two tests there are `"stop/1 ends the program itself, not merely the shell that started it"` and `"kill/2 reaches the program itself"`; rename the second to `"signal/2 reaches the program itself"` so the test name matches the function it exercises.
+- In `describe "stop/1 and kill/2"`, note that Task 11 added a third test, `"stop/1 ends a program that ignores SIGTERM"`, which also needs `Exec.run(` → `Exec.open(`.
+
+After this task no test should call `Exec.run/2` expecting a handle back. Verify with `grep -n 'Exec.run(' test/exec_test.exs` — every remaining match must be inside the `describe "run/2"` block (renamed from `capture/2`), where `run/2` now means run-to-completion.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
@@ -668,10 +672,12 @@ Rename the old `run/2` to `open/2` — the `@doc`, both `@spec` lines, and the `
   @spec open(binary() | [binary()], options()) :: {:ok, t()} | {:error, term()}
   def open(command, options \\ []) do
     {owner, options} = Keyword.pop(options, :owner, self())
-    command = command |> normalize_command() |> resolve_command()
+    command = normalize_command(command)
     ProgramSupervisor.start_program(command, owner, options)
   end
 ```
+
+Only the function name and its two `@spec`s change here. The body is already what is shown: Task 11 folded the `resolve_command/1` call into `normalize_command/1`'s list clause, so `open/2` calls `normalize_command/1` alone. Do not reintroduce a pipeline through `resolve_command/1`.
 
 Rename `capture/2` to `run/2`:
 
