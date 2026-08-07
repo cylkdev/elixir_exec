@@ -475,7 +475,7 @@ defmodule Exec do
   defp trailing_line(tag, partial), do: [{tag, partial}]
 
   # erlexec builds the argv with a function accepting only binaries and lists
-  # (exec.erl:1356); anything else raises function_clause inside the :exec
+  # (exec.erl:1362); anything else raises function_clause inside the :exec
   # singleton, which is VM-wide and would take every other running program with
   # it.
   defp to_argv(command) when is_list(command) do
@@ -492,7 +492,7 @@ defmodule Exec do
   # everywhere, as System.shell/2 does.
   #
   # An empty command is passed through unwrapped: erlexec rejects an empty
-  # command itself (exec.cpp:401, "empty command provided"), but that check
+  # command itself (exec.cpp:404-405, "empty command provided"), but that check
   # inspects the first element of the argv it receives, and ["/bin/sh", "-c",
   # ""] is a three-element, non-empty argv. Wrapping "" would silently turn a
   # caller error into a program that runs and exits 0.

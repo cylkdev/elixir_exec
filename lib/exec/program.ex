@@ -9,7 +9,7 @@ defmodule Exec.Program do
   # mailbox.
   #
   # It monitors the owner and stops the program if the owner dies. erlexec does
-  # not do this: under `link` it links whoever called :exec.run (exec.erl:1204),
+  # not do this: under `link` it links whoever called :exec.run (exec.erl:1207),
   # which is this process, not the owner.
   #
   # That link is the reason `link` is used here rather than `monitor`. erlexec
@@ -20,7 +20,7 @@ defmodule Exec.Program do
   # Under `monitor` the controller outlives us and the OS process is orphaned.
   #
   # The link is bidirectional, and a non-zero exit does exit the controller
-  # abnormally (exec.erl:1223), so this process traps exits. The program's exit
+  # abnormally (exec.erl:1230), so this process traps exits. The program's exit
   # then arrives as a message like any other. None of this reaches the owner,
   # which is held by a monitor and never a link.
 
@@ -147,7 +147,7 @@ defmodule Exec.Program do
 
   # The controller is the only process this one is linked to, and gen_server
   # handles its parent's exit itself, so any EXIT reaching here is the program
-  # ending. Its reason carries the exit status (exec.erl:1219-1226).
+  # ending. Its reason carries the exit status (exec.erl:1224-1231).
   def handle_info({:EXIT, _controller, reason}, state) do
     deliver_or_queue(state, {:exit, decode_exit_reason(reason)})
   end

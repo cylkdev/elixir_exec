@@ -81,7 +81,7 @@ see "Out of scope" below.
 
 ### Signal numbers are platform-specific
 
-`erlexec`'s `signal_to_int/1` (`src/exec.erl:811`) hardcodes Linux numbers:
+`erlexec`'s `signal_to_int/1` (`src/exec.erl:816`) hardcodes Linux numbers:
 
 | Signal | erlexec | Darwin |
 |---|---|---|
