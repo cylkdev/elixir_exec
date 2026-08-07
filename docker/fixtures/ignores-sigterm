@@ -1,0 +1,29 @@
+#!/bin/sh
+#
+# A program that refuses to shut down politely.
+#
+# ElixirExec.stop/1 claims to send SIGTERM first and then, if the program is
+# still running about five seconds later, SIGKILL. Nothing in the test suite
+# proves the second half of that, because every program the other tests start --
+# `cat`, `sleep`, `echo` -- exits as soon as it is sent SIGTERM.
+#
+# This script does not. `trap '' TERM` tells the shell to ignore SIGTERM
+# entirely: the signal arrives and nothing happens. SIGKILL cannot be ignored by
+# any program, so the only thing that can end this script is the escalation.
+#
+# It prints "ready" first so that a test can wait for that line and know the
+# program is running before trying to stop it, rather than guessing with a
+# sleep.
+#
+# The loop then does nothing forever, one tenth of a second at a time.
+#
+# The tests refer to this file by its path inside the container,
+# /usr/local/fixtures/ignores-sigterm. It is copied there by docker/Dockerfile.
+
+trap '' TERM
+
+echo ready
+
+while :; do
+  sleep 0.1
+done

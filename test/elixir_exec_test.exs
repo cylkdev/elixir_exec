@@ -113,6 +113,14 @@ defmodule ElixirExecTest do
       assert ElixirExec.kill(conn, 9) === :ok
       assert ElixirExec.read(conn) === {:ok, {:exit, {:signal, :sigkill}}}
     end
+
+    test "stop/1 ends a program that ignores SIGTERM" do
+      {:ok, conn} = ElixirExec.run("/usr/local/fixtures/ignores-sigterm", kill_timeout: 1)
+
+      assert ElixirExec.read(conn) === {:ok, {:stdout, "ready\n"}}
+      assert ElixirExec.stop(conn) === :ok
+      assert ElixirExec.read(conn) === {:ok, {:exit, 0}}
+    end
   end
 
   describe "capture/2" do
