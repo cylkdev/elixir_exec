@@ -589,7 +589,18 @@ Measured with three arms interleaved so each sees identical conditions, 100 tria
 
 `sigquit` is the control that makes the diagnosis conclusive: it is catchable, so if the loss were about catchable signals generally it would be lost too.
 
-This is a defect in erlexec's C++, reported separately in the standalone project at `../erlexec_signal_loss`. This task adds a bounded workaround here until that fix lands.
+**The window is narrow but almost certain while it is open**, and much more reliably hit on macOS than on Linux. Measured on a macOS host, varying only the delay between starting the program and signalling it:
+
+| Signal sent after | Lost |
+|---|---|
+| 0 ms | 36/40 |
+| 5 ms | 0/40 |
+| 10 ms | 0/40 |
+| 25 ms and beyond | 0/40 |
+
+This is what justifies `@resend_after_ms` below. The window closes within 5 ms on that machine, so a recheck at 50 ms sits an order of magnitude clear of it, on both platforms. Confirm the shape of this on the machine you are working on before relying on the constant — if the window turns out to extend past 50 ms anywhere, the resend would land inside it and accomplish nothing.
+
+This is a defect in erlexec's C++, reported separately in the standalone project at `../erlexec_signal_loss`, which reproduces it on both Linux (8/100) and macOS (99/100). This task adds a bounded workaround here until that fix lands.
 
 **Files:**
 - Modify: `lib/exec/program.ex`
