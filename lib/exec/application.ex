@@ -1,4 +1,4 @@
-defmodule ElixirExec.Application do
+defmodule Exec.Application do
   @moduledoc false
 
   # Owns the supervisor that running programs are started under. It does not
@@ -9,7 +9,7 @@ defmodule ElixirExec.Application do
 
   @impl Application
   def start(_type, _args) do
-    children = [ElixirExec.ConnectionSupervisor]
-    Supervisor.start_link(children, strategy: :one_for_one, name: ElixirExec.Supervisor)
+    children = [Exec.ProgramSupervisor]
+    Supervisor.start_link(children, strategy: :one_for_one, name: Exec.Supervisor)
   end
 end

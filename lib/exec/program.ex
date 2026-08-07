@@ -1,4 +1,4 @@
-defmodule ElixirExec.Connection do
+defmodule Exec.Program do
   @moduledoc false
 
   # One process per running program.

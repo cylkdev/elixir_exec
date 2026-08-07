@@ -2,7 +2,7 @@
 #
 # A program that refuses to shut down politely.
 #
-# ElixirExec.stop/1 claims to send SIGTERM first and then, if the program is
+# Exec.stop/1 claims to send SIGTERM first and then, if the program is
 # still running about five seconds later, SIGKILL. Nothing in the test suite
 # proves the second half of that, because every program the other tests start --
 # `cat`, `sleep`, `echo` -- exits as soon as it is sent SIGTERM.

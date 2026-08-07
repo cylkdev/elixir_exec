@@ -1,16 +1,16 @@
-defmodule ElixirExec do
+defmodule Exec do
   @moduledoc """
   Run OS processes from Elixir.
 
   Start a program, read from it, write to it, stop it:
 
-      {:ok, conn} = ElixirExec.run("cat")
+      {:ok, conn} = Exec.run("cat")
 
-      ElixirExec.write(conn, "hello\\n")
-      {:ok, {:stdout, "hello\\n"}} = ElixirExec.read(conn)
+      Exec.write(conn, "hello\\n")
+      {:ok, {:stdout, "hello\\n"}} = Exec.read(conn)
 
-      ElixirExec.write(conn, :eof)
-      {:ok, {:exit, 0}} = ElixirExec.read(conn)
+      Exec.write(conn, :eof)
+      {:ok, {:exit, 0}} = Exec.read(conn)
 
   `capture/2` and `stream/2` are that loop written for you — one collects
   everything, the other hands it to you as it arrives.
@@ -28,7 +28,7 @@ defmodule ElixirExec do
   The guarantee does not survive the VM going down.
   """
 
-  alias ElixirExec.{Connection, ConnectionSupervisor, Output}
+  alias Exec.{Output, Program, ProgramSupervisor}
 
   @typedoc """
   Options for the command, as a keyword list.
@@ -71,7 +71,7 @@ defmodule ElixirExec do
   caller. The owner is held by a monitor, not a link, so the reverse is not
   true: a program failing or exiting non-zero never disturbs you.
 
-      spawn(fn -> {:ok, _} = ElixirExec.run("sleep 3600") end)
+      spawn(fn -> {:ok, _} = Exec.run("sleep 3600") end)
       # that process exits immediately, and `sleep 3600` is killed with it.
   """
   @spec run(binary() | [binary()]) :: {:ok, conn()} | {:error, term()}
@@ -79,7 +79,7 @@ defmodule ElixirExec do
   def run(command, options \\ []) do
     {owner, options} = Keyword.pop(options, :owner, self())
     command = normalize_command(command)
-    ConnectionSupervisor.start_supervised_connection(command, owner, options)
+    ProgramSupervisor.start_program(command, owner, options)
   end
 
   @doc """
@@ -88,15 +88,15 @@ defmodule ElixirExec do
   Blocks until there is something, or until `timeout` milliseconds pass.
   Output is held for you, so nothing is lost between reads.
 
-      {:ok, {:stdout, "line one\\n"}} = ElixirExec.read(conn)
-      {:error, :timeout} = ElixirExec.read(conn, 0)
+      {:ok, {:stdout, "line one\\n"}} = Exec.read(conn)
+      {:error, :timeout} = Exec.read(conn, 0)
 
   `{:ok, {:exit, status}}` is the last thing a program produces; reading past
   it is an error, because there is nothing left to read from.
   """
   @spec read(conn()) :: {:ok, event()} | {:error, :timeout}
   @spec read(conn(), timeout()) :: {:ok, event()} | {:error, :timeout}
-  def read(conn, timeout \\ :infinity), do: Connection.read(conn, timeout)
+  def read(conn, timeout \\ :infinity), do: Program.read(conn, timeout)
 
   @doc """
   Writes to the program's standard input, or closes it with `:eof`.
@@ -106,7 +106,7 @@ defmodule ElixirExec do
   has already exited returns `{:error, reason}`.
   """
   @spec write(conn(), iodata() | :eof) :: :ok | {:error, term()}
-  def write(conn, data), do: Connection.write(conn, data)
+  def write(conn, data), do: Program.write(conn, data)
 
   @doc """
   Ends the program, gently.
@@ -116,7 +116,7 @@ defmodule ElixirExec do
   `9` when you need it gone immediately.
   """
   @spec stop(conn()) :: :ok | {:error, term()}
-  def stop(conn), do: Connection.stop(conn)
+  def stop(conn), do: Program.stop(conn)
 
   @doc """
   Sends `signal` to the program.
@@ -125,7 +125,7 @@ defmodule ElixirExec do
   integer number. Unlike `stop/1` this is immediate — no escalation.
   """
   @spec kill(conn(), atom() | integer()) :: :ok | {:error, term()}
-  def kill(conn, signal), do: Connection.kill(conn, signal)
+  def kill(conn, signal), do: Program.kill(conn, signal)
 
   @doc """
   Runs `command` to completion and returns what it printed.
@@ -134,17 +134,17 @@ defmodule ElixirExec do
   whole call rather than the gap between two chunks, so a program that prints
   continuously still times out; on expiry the program is stopped.
 
-  Returns `{:ok, %ElixirExec.Output{}}` whenever the command *ran* — including
+  Returns `{:ok, %Exec.Output{}}` whenever the command *ran* — including
   when it exited non-zero. A non-zero exit is a normal outcome (`grep` finding
   nothing), not an error, so the code is in the struct and you decide whether
   it matters.
 
   ## Examples
 
-      iex> ElixirExec.capture("echo hi")
-      {:ok, %ElixirExec.Output{stdout: ["hi\\n"], stderr: [], exit_status: 0}}
+      iex> Exec.capture("echo hi")
+      {:ok, %Exec.Output{stdout: ["hi\\n"], stderr: [], exit_status: 0}}
 
-      iex> {:ok, output} = ElixirExec.capture("exit 3")
+      iex> {:ok, output} = Exec.capture("exit 3")
       iex> output.exit_status
       3
   """
@@ -215,12 +215,12 @@ defmodule ElixirExec do
   ## Examples
 
       "printf 'a\\nb\\n'"
-      |> ElixirExec.stream()
+      |> Exec.stream()
       |> Enum.to_list()
       #=> [{:stdout, "a\\n"}, {:stdout, "b\\n"}, {:exit_status, 0}]
 
       "tail -f /var/log/system.log"
-      |> ElixirExec.stream()
+      |> Exec.stream()
       |> Stream.each(&Logger.info/1)
       |> Enum.take(5)
 

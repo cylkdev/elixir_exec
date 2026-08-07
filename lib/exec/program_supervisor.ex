@@ -1,21 +1,21 @@
-defmodule ElixirExec.ConnectionSupervisor do
+defmodule Exec.ProgramSupervisor do
   @moduledoc false
 
-  # Every running program hangs off here, one child per connection. Children are
+  # Every running program hangs off here, one child per program. Children are
   # `:temporary` -- a program that ends has ended, and restarting it would run
   # the command a second time -- so this supervisor exists to own them and take
   # them down with the VM, not to bring them back.
 
   use DynamicSupervisor
 
-  alias ElixirExec.Connection
+  alias Exec.Program
 
   # :temporary: a restarted worker would re-run the command, and its program is
   # already gone.
-  def start_supervised_connection(command, owner, opts) do
+  def start_program(command, owner, opts) do
     DynamicSupervisor.start_child(__MODULE__, %{
-      id: Connection,
-      start: {Connection, :start_link, [command, owner, opts]},
+      id: Program,
+      start: {Program, :start_link, [command, owner, opts]},
       restart: :temporary
     })
   end

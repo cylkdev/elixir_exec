@@ -1,8 +1,8 @@
-defmodule ElixirExec.Output do
+defmodule Exec.Output do
   @moduledoc """
   What a command printed, and how it ended.
 
-  You get one of these back from `ElixirExec.capture/2`.
+  You get one of these back from `Exec.capture/2`.
 
   ## Fields
 

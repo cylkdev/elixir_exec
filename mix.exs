@@ -1,4 +1,4 @@
-defmodule ElixirExec.MixProject do
+defmodule Exec.MixProject do
   use Mix.Project
 
   @version "0.1.0"
@@ -40,13 +40,13 @@ defmodule ElixirExec.MixProject do
   end
 
   def application do
-    # `mod:` exists only to supervise ElixirExec.ConnectionSupervisor, which
-    # owns one connection process per running program. `:erlexec` remains an
-    # ordinary started dependency that supervises its own `exec` gen_server --
-    # we do not start, configure or wrap it.
+    # `mod:` exists only to supervise Exec.ProgramSupervisor, which owns one
+    # process per running program. `:erlexec` remains an ordinary started
+    # dependency that supervises its own `exec` gen_server -- we do not start,
+    # configure or wrap it.
     [
       extra_applications: [:logger],
-      mod: {ElixirExec.Application, []}
+      mod: {Exec.Application, []}
     ]
   end
 
@@ -75,7 +75,7 @@ defmodule ElixirExec.MixProject do
 
   defp docs do
     [
-      main: "ElixirExec",
+      main: "Exec",
       source_ref: "v#{@version}",
       extras: ["README.md"]
     ]

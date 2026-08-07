@@ -2,7 +2,7 @@
 # test suite needs, so the tests can run without installing anything on the
 # computer you are sitting at.
 #
-# Why bother: the tests in test/elixir_exec_test.exs start real programs --
+# Why bother: the tests in test/exec_test.exs start real programs --
 # `sleep`, `cat`, `printf`, `pgrep` -- and check what those programs print and
 # how they end. Those programs have to exist. On a Mac some of them are missing
 # and others behave differently than on Linux. Installing them here means every
@@ -66,7 +66,7 @@ SHELL ["/bin/sh", "-e", "-c"]
 #
 #   procps           The `pgrep` command, which searches the operating system's
 #                    list of running programs by name. Three tests in
-#                    test/elixir_exec_test.exs shell out to `pgrep` to confirm
+#                    test/exec_test.exs shell out to `pgrep` to confirm
 #                    that a program really disappeared from the operating
 #                    system, rather than trusting this library's own report that
 #                    it stopped that program.
@@ -207,8 +207,8 @@ RUN mix dialyzer --plt
 #
 # docker/fixtures holds one file: a shell script named ignores-sigterm, which
 # ignores the SIGTERM signal and then loops forever. A test in
-# test/elixir_exec_test.exs starts it by its full path inside the image,
-# /usr/local/fixtures/ignores-sigterm, to check that ElixirExec.stop/1 escalates
+# test/exec_test.exs starts it by its full path inside the image,
+# /usr/local/fixtures/ignores-sigterm, to check that Exec.stop/1 escalates
 # to SIGKILL when a program declines to exit on SIGTERM. It is a file on disk
 # rather than a string inside a test because the operating system can only
 # execute a program that exists as a file.
