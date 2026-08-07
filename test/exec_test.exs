@@ -148,17 +148,17 @@ defmodule ExecTest do
     # asserted on its own.
     test "yields stdout lines with the delimiter retained, then the exit status" do
       assert ~S(printf 'a\nb\n') |> Exec.stream!() |> Enum.to_list() ===
-               [{:stdout, "a\n"}, {:stdout, "b\n"}, {:exit_status, 0}]
+               [{:stdout, "a\n"}, {:stdout, "b\n"}, {:exit, 0}]
     end
 
     test "yields stderr lines the same way" do
       assert ~S(printf 'e\n' 1>&2) |> Exec.stream!() |> Enum.to_list() ===
-               [{:stderr, "e\n"}, {:exit_status, 0}]
+               [{:stderr, "e\n"}, {:exit, 0}]
     end
 
     test "flushes a trailing partial line that has no delimiter" do
       assert ~S(printf 'a\nb') |> Exec.stream!() |> Enum.to_list() ===
-               [{:stdout, "a\n"}, {:stdout, "b"}, {:exit_status, 0}]
+               [{:stdout, "a\n"}, {:stdout, "b"}, {:exit, 0}]
     end
 
     test "halting early stops the program and emits no exit status" do

@@ -195,14 +195,14 @@ defmodule Exec do
 
     * `{:stdout, line}` — one line, delimiter retained
     * `{:stderr, line}` — one line, delimiter retained
-    * `{:exit_status, status}` — final element, emitted only when the
+    * `{:exit, status}` — final element, emitted only when the
       program ends on its own
 
   stdout and stderr are each delivered in order, but **not** ordered relative
   to each other.
 
   If you stop early — `Enum.take/2`, `Enum.find/2`, a `reduce_while` halt, or
-  an exception — the program is stopped and **no** `{:exit_status, _}` is
+  an exception — the program is stopped and **no** `{:exit, _}` is
   emitted. That absence is meaningful: it distinguishes "I stopped reading"
   from "it finished".
 
@@ -217,7 +217,7 @@ defmodule Exec do
       "printf 'a\\nb\\n'"
       |> Exec.stream!()
       |> Enum.to_list()
-      #=> [{:stdout, "a\\n"}, {:stdout, "b\\n"}, {:exit_status, 0}]
+      #=> [{:stdout, "a\\n"}, {:stdout, "b\\n"}, {:exit, 0}]
 
       "tail -f /var/log/system.log"
       |> Exec.stream!()
@@ -253,7 +253,7 @@ defmodule Exec do
         {Enum.map(lines, &{:stderr, &1}), {program, out, partial}}
 
       {:ok, {:exit, status}} ->
-        {flush(:stdout, out) ++ flush(:stderr, err) ++ [{:exit_status, status}], :done}
+        {flush(:stdout, out) ++ flush(:stderr, err) ++ [{:exit, status}], :done}
     end
   end
 
