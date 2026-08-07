@@ -1042,7 +1042,7 @@ Rewrite `open/2` to validate before starting:
   def open(command, options \\ []) do
     validate_options!(options)
     {owner, options} = Keyword.pop(options, :owner, self())
-    command = command |> normalize_command() |> resolve_command()
+    command = normalize_command(command)
     ProgramSupervisor.start_program(command, owner, options)
   end
 
@@ -1058,6 +1058,8 @@ Rewrite `open/2` to validate before starting:
   end
 ```
 
+Note that `:group` appears in neither list, deliberately. Task 11 made the library set the program's process group itself, because a caller overriding it silently breaks the lifetime guarantee. A caller passing `group:` therefore now gets an `ArgumentError`, which is the intended outcome — do not add `:group` to `@forwarded_options` to make that go away.
+
 - [ ] **Step 4: Turn erlexec's `{:invalid_option, _}` into an `ArgumentError`**
 
 An invalid *value* is only detectable by erlexec, and it surfaces as a start failure from `:exec.run/2`, which `Exec.Program.init/1` turns into `{:stop, reason}`. Convert it in `open/2` where the supervisor's result is returned:
@@ -1066,7 +1068,7 @@ An invalid *value* is only detectable by erlexec, and it surfaces as a start fai
   def open(command, options \\ []) do
     validate_options!(options)
     {owner, options} = Keyword.pop(options, :owner, self())
-    command = command |> normalize_command() |> resolve_command()
+    command = normalize_command(command)
 
     case ProgramSupervisor.start_program(command, owner, options) do
       {:ok, program} -> {:ok, program}
