@@ -68,7 +68,7 @@ defmodule Exec.Program do
   def init({command, owner, opts}) do
     Process.flag(:trap_exit, true)
 
-    case :exec.run(command, exec_run_options(opts)) do
+    case :exec.run(command, build_exec_options(opts)) do
       {:ok, _controller, os_pid} ->
         {:ok,
          %{
@@ -94,7 +94,7 @@ defmodule Exec.Program do
         {:reply, {:ok, event}, %{state | events: events}}
 
       {:empty, _events} ->
-        {:noreply, %{state | reader: {from, read_timer(timeout)}}}
+        {:noreply, %{state | reader: {from, start_read_timer(timeout)}}}
     end
   end
 
@@ -115,7 +115,7 @@ defmodule Exec.Program do
 
   @impl GenServer
   def handle_info({stream, _os_pid, data}, state) when stream in [:stdout, :stderr] do
-    record(state, {stream, data})
+    deliver_or_queue(state, {stream, data})
   end
 
   def handle_info({:DOWN, ref, :process, _pid, _reason}, %{owner_ref: ref} = state) do
@@ -131,7 +131,7 @@ defmodule Exec.Program do
   # handles its parent's exit itself, so any EXIT reaching here is the program
   # ending. Its reason carries the exit status (exec.erl:1219-1226).
   def handle_info({:EXIT, _controller, reason}, state) do
-    record(state, {:exit, exit_status(reason)})
+    deliver_or_queue(state, {:exit, decode_exit_reason(reason)})
   end
 
   def handle_info(:read_timeout, %{reader: {from, _timer}} = state) do
@@ -140,29 +140,29 @@ defmodule Exec.Program do
   end
 
   # Hands an event to a waiting reader, or queues it until one asks.
-  defp record(%{reader: nil} = state, event) do
+  defp deliver_or_queue(%{reader: nil} = state, event) do
     {:noreply, %{state | events: :queue.in(event, state.events)}}
   end
 
-  defp record(%{reader: {from, timer}} = state, {:exit, _} = event) do
+  defp deliver_or_queue(%{reader: {from, timer}} = state, {:exit, _} = event) do
     _ = cancel_read_timer(timer)
     GenServer.reply(from, {:ok, event})
     {:stop, :normal, %{state | reader: nil}}
   end
 
-  defp record(%{reader: {from, timer}} = state, event) do
+  defp deliver_or_queue(%{reader: {from, timer}} = state, event) do
     _ = cancel_read_timer(timer)
     GenServer.reply(from, {:ok, event})
     {:noreply, %{state | reader: nil}}
   end
 
-  defp read_timer(:infinity), do: nil
-  defp read_timer(timeout), do: Process.send_after(self(), :read_timeout, timeout)
+  defp start_read_timer(:infinity), do: nil
+  defp start_read_timer(timeout), do: Process.send_after(self(), :read_timeout, timeout)
 
   defp cancel_read_timer(nil), do: :ok
   defp cancel_read_timer(timer), do: Process.cancel_timer(timer)
 
-  defp exec_run_options(opts) do
+  defp build_exec_options(opts) do
     stdin? = Keyword.get(opts, :stdin, true)
     stdout? = Keyword.get(opts, :stdout, true)
     stderr? = Keyword.get(opts, :stderr, true)
@@ -194,7 +194,7 @@ defmodule Exec.Program do
     proplist ++ run_opts
   end
 
-  defp exit_status(status) do
+  defp decode_exit_reason(status) do
     case status do
       :normal -> 0
       {:exit_status, raw} when Bitwise.band(raw, 0xFF) === 0 -> Bitwise.bsr(raw, 8)

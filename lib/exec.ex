@@ -102,7 +102,7 @@ defmodule Exec do
   def open(command, options \\ []) do
     validate_options!(options)
     {owner, options} = Keyword.pop(options, :owner, self())
-    command = normalize_command(command)
+    command = to_argv(command)
 
     case ProgramSupervisor.start_program(command, owner, options) do
       {:ok, program} -> {:ok, program}
@@ -204,17 +204,17 @@ defmodule Exec do
           {:ok, Result.t()} | {:error, :timeout} | {:error, term()}
   def run(command, options \\ []) do
     with {:ok, program} <- open(command, options) do
-      collect(program, [], [], deadline(options[:timeout] || :infinity))
+      read_until_exit(program, [], [], deadline_after(options[:timeout] || :infinity))
     end
   end
 
-  defp collect(program, out, err, deadline) do
-    case read(program, time_left(deadline)) do
+  defp read_until_exit(program, out, err, deadline) do
+    case read(program, remaining_timeout(deadline)) do
       {:ok, {:stdout, data}} ->
-        collect(program, [data | out], err, deadline)
+        read_until_exit(program, [data | out], err, deadline)
 
       {:ok, {:stderr, data}} ->
-        collect(program, out, [data | err], deadline)
+        read_until_exit(program, out, [data | err], deadline)
 
       {:ok, {:exit, status}} ->
         {:ok,
@@ -231,13 +231,13 @@ defmodule Exec do
     end
   end
 
-  defp deadline(:infinity), do: :infinity
-  defp deadline(timeout), do: System.monotonic_time(:millisecond) + timeout
+  defp deadline_after(:infinity), do: :infinity
+  defp deadline_after(timeout), do: System.monotonic_time(:millisecond) + timeout
 
   # Absolute, not per-read: a chatty program would reset a per-chunk timer on
   # every line and never time out.
-  defp time_left(:infinity), do: :infinity
-  defp time_left(deadline), do: max(deadline - System.monotonic_time(:millisecond), 0)
+  defp remaining_timeout(:infinity), do: :infinity
+  defp remaining_timeout(deadline), do: max(deadline - System.monotonic_time(:millisecond), 0)
 
   @doc """
   Runs `command` and returns its output as a lazy stream.
@@ -291,48 +291,48 @@ defmodule Exec do
           {:error, reason} -> raise Exec.Error, reason: reason
         end
       end,
-      &stream_next/1,
-      &stream_teardown/1
+      &emit_lines/1,
+      &stop_unless_exited/1
     )
   end
 
-  defp stream_next(:done), do: {:halt, :done}
+  defp emit_lines(:done), do: {:halt, :done}
 
-  defp stream_next({program, out, err}) do
+  defp emit_lines({program, out, err}) do
     case read(program) do
       {:ok, {:stdout, data}} ->
-        {lines, partial} = split_lines(out <> data)
+        {lines, partial} = split_complete_lines(out <> data)
         {Enum.map(lines, &{:stdout, &1}), {program, partial, err}}
 
       {:ok, {:stderr, data}} ->
-        {lines, partial} = split_lines(err <> data)
+        {lines, partial} = split_complete_lines(err <> data)
         {Enum.map(lines, &{:stderr, &1}), {program, out, partial}}
 
       {:ok, {:exit, status}} ->
-        {flush(:stdout, out) ++ flush(:stderr, err) ++ [{:exit, status}], :done}
+        {trailing_line(:stdout, out) ++ trailing_line(:stderr, err) ++ [{:exit, status}], :done}
     end
   end
 
   # Runs on halt, exhaustion and exception alike.
-  defp stream_teardown(:done), do: :ok
-  defp stream_teardown({program, _out, _err}), do: stop(program)
+  defp stop_unless_exited(:done), do: :ok
+  defp stop_unless_exited({program, _out, _err}), do: stop(program)
 
   # Output arrives in chunks, not lines, and one line can span two chunks, so
   # the trailing partial is returned to prepend to the next chunk.
-  defp split_lines(buffer) do
+  defp split_complete_lines(buffer) do
     {complete, [partial]} = buffer |> String.split("\n") |> Enum.split(-1)
     {Enum.map(complete, &(&1 <> "\n")), partial}
   end
 
-  defp flush(_tag, ""), do: []
-  defp flush(tag, partial), do: [{tag, partial}]
+  defp trailing_line(_tag, ""), do: []
+  defp trailing_line(tag, partial), do: [{tag, partial}]
 
   # erlexec builds the argv with a function accepting only binaries and lists
   # (exec.erl:1356); anything else raises function_clause inside the :exec
   # singleton, which is VM-wide and would take every other running program with
   # it.
-  defp normalize_command(command) when is_list(command) do
-    command |> Enum.map(&to_string/1) |> resolve_command()
+  defp to_argv(command) when is_list(command) do
+    command |> Enum.map(&to_string/1) |> resolve_executable_path()
   end
 
   # A string is a shell script, so something has to interpret it. Left to
@@ -349,18 +349,18 @@ defmodule Exec do
   # inspects the first element of the argv it receives, and ["/bin/sh", "-c",
   # ""] is a three-element, non-empty argv. Wrapping "" would silently turn a
   # caller error into a program that runs and exits 0.
-  defp normalize_command(""), do: ""
-  defp normalize_command(command), do: ["/bin/sh", "-c", to_string(command)]
+  defp to_argv(""), do: ""
+  defp to_argv(command), do: ["/bin/sh", "-c", to_string(command)]
 
   # execve does not search PATH, so a bare name in list form is resolved here.
   # A name containing "/" is already a path; an unresolvable one is left alone
   # so the caller sees the real failure. String commands go to a shell, which
   # searches for itself.
-  defp resolve_command([exe | args]) do
+  defp resolve_executable_path([exe | args]) do
     if String.contains?(exe, "/"),
       do: [exe | args],
       else: [System.find_executable(exe) || exe | args]
   end
 
-  defp resolve_command(command), do: command
+  defp resolve_executable_path(command), do: command
 end
