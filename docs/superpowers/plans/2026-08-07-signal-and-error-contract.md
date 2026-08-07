@@ -1036,6 +1036,27 @@ Its current claim — "Returns `{:error, reason}` if the program has already exi
   """
 ```
 
+- [ ] **Step 3b: Document that a shell wrapper defeats a program's own signal trap**
+
+Discovered while verifying Task 4, and measured:
+
+| Command form | `signal(program, :sigterm)` against a program whose script runs `trap '' TERM` |
+|---|---|
+| String, e.g. `Exec.open("/path/to/script")` | `{:exit, {:signal, :sigterm}}` — the trap does not save it |
+| List, e.g. `Exec.open(["/path/to/script"])` | `{:error, :timeout}` — the trap holds and the program keeps running |
+
+`signal/2` signals the program's whole process group, and for a string command that group also contains the `/bin/sh -c` wrapper. The wrapper does not trap anything, so it dies, and its death is the exit the caller is told about — even though the program it wrapped is still ignoring the signal.
+
+Add this to `signal/2`'s `@doc`, after the sentence about signalling the whole process group:
+
+```
+  A program that traps a signal is not protected from `signal/2` when its
+  command was given as a binary. The `/bin/sh -c` wrapper shares the program's
+  process group and traps nothing, so the wrapper dies and its exit is what
+  `read/2` reports. Use the list form to signal a program that handles signals
+  itself.
+```
+
 - [ ] **Step 4: Add the spawn-window section to the `@moduledoc`**
 
 Insert immediately after the `## Exit status` section and before `## Failure to launch`:
