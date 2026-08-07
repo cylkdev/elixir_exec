@@ -1,31 +1,89 @@
 defmodule Exec do
   @moduledoc """
-  Run OS processes from Elixir.
+  Runs and controls operating system processes.
 
-  Start a program, read from it, write to it, stop it:
+  Three entry points, in increasing order of control:
 
-      {:ok, conn} = Exec.open("cat")
+    * `run/2` runs a command to completion and returns its output.
+    * `stream!/2` runs a command and yields its output lazily, line by line.
+    * `open/2` starts a command and returns a handle for `read/2`, `write/2`,
+      `stop/1` and `signal/2`.
 
-      Exec.write(conn, "hello\\n")
-      {:ok, {:stdout, "hello\\n"}} = Exec.read(conn)
+  `run/2` and `stream!/2` are both written in terms of `open/2` and `read/2`.
 
-      Exec.write(conn, :eof)
-      {:ok, {:exit, 0}} = Exec.read(conn)
+      iex> {:ok, result} = Exec.run("echo hello")
+      iex> result.stdout
+      "hello\\n"
 
-  `run/2` and `stream!/2` are that loop written for you — one collects
-  everything, the other hands it to you as it arrives.
+  ## Command forms
+
+  A command is either a binary, run as `/bin/sh -c command`, or a list of
+  binaries, passed to `execve` directly with no shell involved:
+
+      Exec.run("ls -l | wc -l")   # /bin/sh handles PATH, pipes and redirection
+      Exec.run(["echo", "hi"])    # no shell, no expansion, no interpolation
+
+  In list form a bare executable name is resolved against `PATH` first, so
+  `["echo", "hi"]` behaves as `"echo hi"` does. A name containing `/` is used
+  exactly as given.
+
+  `/bin/sh` is named explicitly rather than taken from `$SHELL`, so a binary
+  command behaves the same way on every machine.
+
+  > #### Watch out {: .warning}
+  >
+  > A binary command is interpreted by a shell, so never pass untrusted input to
+  > it. `Exec.run("cat \#{user_input}")` runs whatever the input says. Use the
+  > list form, which involves no shell, whenever any part of the command comes
+  > from outside the application.
 
   ## Lifetime
 
-  A program never outlives the process that started it. If that process
-  dies — including a brutal kill — the program is stopped. This holds for
-  all three entry points.
+  A program never outlives the process that started it. If that process dies,
+  including under `Process.exit(pid, :kill)`, the program is stopped. This holds
+  for `run/2`, `stream!/2` and `open/2` alike, and does not survive the VM
+  itself going down.
 
-  It is enforced by a monitor rather than a link, so the reverse is not
-  true: a program failing or exiting non-zero never disturbs the process
-  that started it.
+  Each program runs in a process group of its own, and `stop/1` and `signal/2`
+  act on that group. A binary command therefore takes the shell and everything
+  the shell started with it, rather than leaving the real work orphaned.
 
-  The guarantee does not survive the VM going down.
+  The reverse does not hold: a program that fails or exits non-zero does not
+  disturb the process that started it.
+
+  Pass `owner: pid` to tie a program's lifetime to a process other than the
+  caller.
+
+  ## Exit status of a binary command
+
+  A binary command reports the exit status of `/bin/sh`, which is not always the
+  exit status of the program inside it. A shell that ran a single program exits
+  with that program's code, but a program killed by a signal makes the shell
+  exit `128 + signal`, and the shell writes its own diagnostic to standard
+  error. Terminating `sleep 30` produces:
+
+      {:stderr, "Terminated\\n"}
+      {:exit, 143}
+
+  That `"Terminated\\n"` comes from the shell, not from the program.
+
+  List form has no shell in between, reports the program's own status as
+  `{:signal, name}`, and adds nothing to standard error:
+
+      {:exit, {:signal, :sigterm}}
+
+  ## Failure to launch
+
+  A missing executable, a permission failure and an unreachable `:cd` are
+  reported as a non-zero exit status with a diagnostic on standard error, not as
+  `{:error, reason}`:
+
+      iex> {:ok, result} = Exec.run(["/nonexistent/nope"])
+      iex> result.exit_status
+      1
+
+  `{:error, reason}` means the command could not be handed to the operating
+  system at all.
   """
 
   alias Exec.{Program, ProgramSupervisor, Result}
@@ -51,51 +109,74 @@ defmodule Exec do
   ]
 
   @typedoc """
-  Options for the command, as a keyword list.
+  Options for a command, as a keyword list.
 
-  `timeout: ms` is read by `run/2` and `owner: pid` by `open/2`. Of the
-  rest, these are forwarded to `:exec.run/2` unchanged: `:executable`, `:cd`,
-  `:env`, `:kill`, `:kill_timeout`, `:user`, `:nice`, `:success_exit_code`,
-  `:winsz`, `:pty`, `:capabilities` and `:debug`. `:group` is not accepted —
-  this library sets it itself. Any other key raises `ArgumentError`.
+  Read by this module:
 
-  `stdin: false`, `stdout: false` and `stderr: false` disconnect that stream
-  from the program. All three default to `true`.
+    * `:timeout` - milliseconds bounding a whole `run/2` call. Defaults to
+      `:infinity`. Ignored by `stream!/2` and `open/2`, which have no total
+      duration to bound.
+    * `:owner` - the process whose death stops the program. Defaults to the
+      calling process.
+    * `:stdin`, `:stdout`, `:stderr` - whether to connect that stream to the
+      program. Each defaults to `true`. A program started with `stdout: false`
+      produces no `{:stdout, _}` events at all.
+
+  Forwarded to the underlying runner unchanged: `:executable`, `:cd`, `:env`,
+  `:kill`, `:kill_timeout`, `:user`, `:nice`, `:success_exit_code`,
+  `:winsz`, `:pty`, `:capabilities` and `:debug`. See
+  [erlexec](https://hexdocs.pm/erlexec/exec.html) for their meanings.
+
+  Any other key raises `ArgumentError`, as does a value the runner rejects.
   """
   @type options :: keyword()
 
-  @typedoc "A running program. Pass it back to `read/2`, `write/2`, `stop/1` and `signal/2`."
+  @typedoc "A running program, as returned by `open/2`."
   @opaque t :: pid()
 
   @typedoc "How a command ended: a shell exit code, or `{:signal, name}` if a signal killed it."
   @type exit_status :: non_neg_integer() | {:signal, atom() | pos_integer()}
 
-  @typedoc "One thing a program produced."
+  @typedoc "One thing a program produced, as returned by `read/2`."
   @type event :: {:stdout, binary()} | {:stderr, binary()} | {:exit, exit_status()}
 
   @doc """
-  Starts `command` and returns something to read from, write to, and stop.
+  Starts `command` and returns a handle to it.
 
-  `command` is either a string, which a shell parses (so the shell handles
-  PATH lookup, pipes, and redirection), or a list of strings, which is
-  passed to `execve` directly with no shell involved. In list form, a bare
-  executable name (no `/`) is resolved against `PATH` first, so
-  `open(["echo", "hi"])` works the same as `open("echo hi")`. A name that
-  contains `/` is used exactly as given.
+  The handle is passed to `read/2`, `write/2`, `stop/1` and `signal/2`. Output
+  is held until `read/2` asks for it, so nothing reaches the caller's mailbox
+  and nothing is lost between reads.
 
-  stdin, stdout and stderr are connected by default, so you can `write/2` to
-  it and `read/2` from it without asking for anything. Pass `stdin: false`,
-  `stdout: false` or `stderr: false` to leave one out.
+  Standard input, output and error are connected unless `stdin: false`,
+  `stdout: false` or `stderr: false` is given.
 
-  ## Lifetime
+  > #### Watch out {: .warning}
+  >
+  > A binary command is parsed by a shell. Never pass untrusted input to it; use
+  > the list form instead. See the module documentation.
 
-  The program is stopped if the process that started it dies — including a
-  brutal kill. Pass `owner: pid` to tie it to some process other than the
-  caller. The owner is held by a monitor, not a link, so the reverse is not
-  true: a program failing or exiting non-zero never disturbs you.
+  ## Examples
 
-      spawn(fn -> {:ok, _} = Exec.open("sleep 3600") end)
-      # that process exits immediately, and `sleep 3600` is killed with it.
+      {:ok, program} = Exec.open("cat")
+
+      Exec.write(program, "hello\\n")
+      {:ok, {:stdout, "hello\\n"}} = Exec.read(program)
+
+      Exec.write(program, :eof)
+      {:ok, {:exit, 0}} = Exec.read(program)
+
+  ## Options
+
+  Accepts every option in `t:options/0` except `:timeout`, which applies to
+  `run/2`. `read/2` takes its own timeout per call.
+
+  ## Errors
+
+    * `{:error, :empty_command}` - `command` was empty.
+    * `{:error, {:exec, message}}` - the runner refused to start the command.
+
+  Raises `ArgumentError` for an unknown option key or a value the runner
+  rejects.
   """
   @spec open(binary() | [binary()]) :: {:ok, t()} | {:error, term()}
   @spec open(binary() | [binary()], options()) :: {:ok, t()} | {:error, term()}
@@ -134,70 +215,108 @@ defmodule Exec do
   end
 
   @doc """
-  Reads the next thing the program produced.
+  Reads the next event from `program`.
 
-  Blocks until there is something, or until `timeout` milliseconds pass.
-  Output is held for you, so nothing is lost between reads.
+  Blocks until an event arrives or `timeout` milliseconds pass. Events are held
+  in order, so none is lost between calls.
 
-      {:ok, {:stdout, "line one\\n"}} = Exec.read(conn)
-      {:error, :timeout} = Exec.read(conn, 0)
+  `{:ok, {:exit, status}}` is the last event a program produces. The handle is
+  spent once it is read, and reading again exits the calling process.
 
-  `{:ok, {:exit, status}}` is the last thing a program produces; reading past
-  it is an error, because there is nothing left to read from.
+  ## Examples
+
+      {:ok, {:stdout, "line one\\n"}} = Exec.read(program)
+      {:error, :timeout} = Exec.read(program, 0)
+
+  ## Errors
+
+    * `{:error, :timeout}` - no event arrived within `timeout`. The program is
+      left running.
   """
   @spec read(t()) :: {:ok, event()} | {:error, :timeout}
   @spec read(t(), timeout()) :: {:ok, event()} | {:error, :timeout}
   def read(program, timeout \\ :infinity), do: Program.read(program, timeout)
 
   @doc """
-  Writes to the program's standard input, or closes it with `:eof`.
+  Writes `data` to the standard input of `program`, or closes it with `:eof`.
 
-  stdin is connected unless the program was started with `stdin: false`;
-  without it the write is accepted and the data goes nowhere. A program that
-  has already exited returns `{:error, reason}`.
+  Returns `{:error, reason}` if the program has already exited. A program
+  started with `stdin: false` accepts the write and discards it.
+
+  ## Examples
+
+      :ok = Exec.write(program, "hello\\n")
+      :ok = Exec.write(program, :eof)
   """
   @spec write(t(), iodata() | :eof) :: :ok | {:error, term()}
   def write(program, data), do: Program.write(program, data)
 
   @doc """
-  Ends the program, gently.
+  Ends `program` gracefully.
 
-  Sends `SIGTERM`, escalating to `SIGKILL` after about five seconds, so a
-  program that ignores `SIGTERM` can take that long to die. Use `signal/2` with
-  `9` when you need it gone immediately.
+  Sends `SIGTERM` and escalates to `SIGKILL` after roughly five seconds, so a
+  program that ignores `SIGTERM` can take that long to end. `signal/2` with
+  `:sigkill` ends it immediately.
+
+  A program stopped this way reports exit status `0`, not a signal.
   """
   @spec stop(t()) :: :ok | {:error, term()}
   def stop(program), do: Program.stop(program)
 
   @doc """
-  Sends `signal` to the program.
+  Sends `signal` to `program`.
 
-  `signal` is either an atom (`:sigterm`, `:sigkill`, `:sighup`) or the
-  integer number. Unlike `stop/1` this is immediate — no escalation.
+  `signal` is an atom such as `:sigterm`, `:sigkill` or `:sighup`, or the
+  integer number. Unlike `stop/1` nothing is escalated: exactly one signal is
+  sent.
+
+  ## Examples
+
+      :ok = Exec.signal(program, :sigkill)
+      :ok = Exec.signal(program, 9)
   """
   @spec signal(t(), atom() | integer()) :: :ok | {:error, term()}
   def signal(program, signal), do: Program.kill(program, signal)
 
   @doc """
-  Runs `command` to completion and returns what it printed.
+  Runs `command` to completion and returns its output.
 
-  `command` and `options` are handled as in `open/2`. `timeout: ms` bounds the
-  whole call rather than the gap between two chunks, so a program that prints
-  continuously still times out; on expiry the program is stopped.
+  Returns `{:ok, %Exec.Result{}}` whenever the command ran, including when it
+  exited non-zero. A non-zero exit is an outcome, not an error — `grep` finding
+  nothing exits `1` — so the code is reported in the result rather than as
+  `{:error, _}`.
 
-  Returns `{:ok, %Exec.Result{}}` whenever the command *ran* — including
-  when it exited non-zero. A non-zero exit is a normal outcome (`grep` finding
-  nothing), not an error, so the code is in the struct and you decide whether
-  it matters.
+  > #### Watch out {: .warning}
+  >
+  > A binary command is parsed by a shell. Never pass untrusted input to it; use
+  > the list form instead. See the module documentation.
 
   ## Examples
 
       iex> Exec.run("echo hi")
       {:ok, %Exec.Result{stdout: "hi\\n", stderr: "", exit_status: 0}}
 
-      iex> {:ok, output} = Exec.run("exit 3")
-      iex> output.exit_status
+      iex> {:ok, result} = Exec.run("exit 3")
+      iex> result.exit_status
       3
+
+  ## Options
+
+  Accepts every option in `t:options/0`. `:timeout` bounds the whole call rather
+  than the gap between two chunks, so a command that prints continuously still
+  times out. On expiry the program is stopped:
+
+      iex> Exec.run("sleep 30", timeout: 200)
+      {:error, :timeout}
+
+  ## Errors
+
+    * `{:error, :timeout}` - the command outlived `:timeout` and was stopped.
+    * `{:error, :empty_command}` - `command` was empty.
+    * `{:error, {:exec, message}}` - the runner refused to start the command.
+
+  Raises `ArgumentError` for an unknown option key or a value the runner
+  rejects.
   """
   @spec run(binary() | [binary()]) :: {:ok, Result.t()} | {:error, term()}
   @spec run(binary() | [binary()], options()) ::
@@ -240,46 +359,47 @@ defmodule Exec do
   defp remaining_timeout(deadline), do: max(deadline - System.monotonic_time(:millisecond), 0)
 
   @doc """
-  Runs `command` and returns its output as a lazy stream.
+  Runs `command` and returns its output as a lazy stream of lines.
 
-  `command` and `options` are handled as in `open/2`.
+  Nothing runs until enumeration begins, so a stream that is never enumerated
+  never starts a program.
 
-  Nothing runs until iteration begins, so a stream that is never consumed
-  never starts a process.
+  Elements are `{:stdout, line}`, `{:stderr, line}`, and a final
+  `{:exit, status}`. Lines keep their delimiter, and a final line without one is
+  emitted as it stands. Standard output and standard error are each in order,
+  but not ordered relative to each other.
 
-  ## Elements
+  The `{:exit, status}` element is emitted only when the program ends on its
+  own. Halting early — through `Enum.take/2`, a `Enum.reduce_while/3` halt, or
+  an exception — stops the program and emits no exit element. That absence
+  distinguishes a halted enumeration from a finished program.
 
-    * `{:stdout, line}` — one line, delimiter retained
-    * `{:stderr, line}` — one line, delimiter retained
-    * `{:exit, status}` — final element, emitted only when the
-      program ends on its own
-
-  stdout and stderr are each delivered in order, but **not** ordered relative
-  to each other.
-
-  If you stop early — `Enum.take/2`, `Enum.find/2`, a `reduce_while` halt, or
-  an exception — the program is stopped and **no** `{:exit, _}` is
-  emitted. That absence is meaningful: it distinguishes "I stopped reading"
-  from "it finished".
-
-  ## Errors
-
-  Unlike `run/2` and `open/2`, which return `{:error, reason}` when the
-  command cannot be started, `stream!/2` raises — a lazy stream has no
-  `{:error, _}` channel to put it in.
+  > #### Watch out {: .warning}
+  >
+  > A binary command is parsed by a shell. Never pass untrusted input to it; use
+  > the list form instead. See the module documentation.
 
   ## Examples
 
-      "printf 'a\\nb\\n'"
-      |> Exec.stream!()
-      |> Enum.to_list()
-      #=> [{:stdout, "a\\n"}, {:stdout, "b\\n"}, {:exit, 0}]
+      iex> ~S(printf 'a\\nb\\n') |> Exec.stream!() |> Enum.to_list()
+      [stdout: "a\\n", stdout: "b\\n", exit: 0]
 
       "tail -f /var/log/system.log"
       |> Exec.stream!()
-      |> Stream.each(&Logger.info/1)
+      |> Stream.filter(&match?({:stdout, _}, &1))
       |> Enum.take(5)
 
+  ## Options
+
+  Accepts every option in `t:options/0` except `:timeout`, which a lazy stream
+  has no total duration to apply to.
+
+  ## Errors
+
+  Raises `Exec.Error` when the command cannot be started, rather than returning
+  `{:error, reason}` as `run/2` and `open/2` do: a lazy stream has no error
+  channel. Raises `ArgumentError` for an unknown option key or a value the
+  runner rejects.
   """
   @spec stream!(binary() | [binary()]) :: Enumerable.t()
   @spec stream!(binary() | [binary()], options()) :: Enumerable.t()

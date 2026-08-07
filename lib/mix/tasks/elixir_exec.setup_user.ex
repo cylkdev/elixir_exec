@@ -3,7 +3,7 @@ defmodule Mix.Tasks.ElixirExec.SetupUser do
 
   @moduledoc """
   Create a dedicated NON-root system user (default: `elixir_exec`) that child
-  commands can drop to, so you never have to run erlexec as root. Root
+  commands can drop to, so erlexec never has to run as root. Root
   execution stays disabled.
 
       mix elixir_exec.setup_user
@@ -11,7 +11,7 @@ defmodule Mix.Tasks.ElixirExec.SetupUser do
 
   Then run commands as that user:
 
-      ElixirExec.capture("whoami", user: "elixir_exec")
+      Exec.run("whoami", user: "elixir_exec")
 
   or restrict at the exec level in config. `:erlexec` starts itself and reads
   its own options, so this goes under `:erlexec`, not `:elixir_exec`:
