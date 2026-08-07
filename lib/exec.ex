@@ -107,9 +107,16 @@ defmodule Exec do
     case ProgramSupervisor.start_program(command, owner, options) do
       {:ok, program} -> {:ok, program}
       {:error, {:invalid_option, {key, value}}} -> raise ArgumentError, invalid_value(key, value)
-      {:error, reason} -> {:error, reason}
+      {:error, reason} -> {:error, normalize_start_error(reason)}
     end
   end
+
+  # The runner reports start failures as charlist messages. Only the empty
+  # command is reachable through this module's own argument checks; anything
+  # else is tagged rather than guessed at, so it stays matchable.
+  defp normalize_start_error(~c"empty command provided"), do: :empty_command
+  defp normalize_start_error(reason) when is_list(reason), do: {:exec, to_string(reason)}
+  defp normalize_start_error(reason), do: {:exec, reason}
 
   # A dropped option is an invisible bug: the command runs, quietly ignoring the
   # `cd:` that was meant to place it. System.cmd/3 raises here too.
@@ -281,7 +288,7 @@ defmodule Exec do
       fn ->
         case open(command, options) do
           {:ok, program} -> {program, "", ""}
-          {:error, reason} -> raise "could not start the command: #{inspect(reason)}"
+          {:error, reason} -> raise Exec.Error, reason: reason
         end
       end,
       &stream_next/1,

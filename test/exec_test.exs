@@ -87,7 +87,7 @@ defmodule ExecTest do
     end
 
     test "an empty command is an error" do
-      assert Exec.open("") === {:error, ~c"empty command provided"}
+      assert Exec.open("") === {:error, :empty_command}
     end
 
     test "an unrecognised option raises" do
@@ -155,7 +155,14 @@ defmodule ExecTest do
     end
 
     test "an empty command is an error, not an exit status" do
-      assert Exec.run("") === {:error, ~c"empty command provided"}
+      assert Exec.run("") === {:error, :empty_command}
+    end
+
+    test "a missing executable exits non-zero with a diagnostic, rather than erroring" do
+      assert {:ok, result} = Exec.run(["/nonexistent/nope"])
+
+      assert result.exit_status === 1
+      assert result.stderr =~ "No such file or directory"
     end
 
     test "an unrecognised option raises" do
@@ -189,7 +196,9 @@ defmodule ExecTest do
     test "a command that cannot be started raises" do
       stream = Exec.stream!("")
 
-      assert_raise RuntimeError, fn -> Enum.to_list(stream) end
+      assert_raise Exec.Error, "could not start the command: :empty_command", fn ->
+        Enum.to_list(stream)
+      end
     end
   end
 
