@@ -1812,11 +1812,13 @@ docker/test mix hex.build
 ```
 Expected: succeeds and reports a file list that includes `LICENSE`. The `.tar` it writes needs no cleanup — it is written inside the container, which `docker/test` deletes on exit.
 
-Note that `docker/Dockerfile` copies `lib`, `test`, `mix.exs`, `mix.lock` and the three dotfile configs into the image, but not `README.md` or `LICENSE`. Add both to the Dockerfile in this step, since `mix.exs` lists them in `:files` and `mix hex.build` fails without them:
+Note that `docker/Dockerfile` copies `lib`, `test`, `mix.exs`, `mix.lock`, the three dotfile configs and `README.md` into the image, but not `LICENSE`. Task 8 added the `README.md` line so `mix docs` could run in the container; extend it here so `mix hex.build` can find the licence file too:
 
 ```dockerfile
-# README.md and LICENSE are listed in the `files:` key of mix.exs, so
-# `mix hex.build` refuses to package the project unless both are present.
+# README.md is rendered into the generated documentation by `mix docs`, which
+# mix.exs configures through its `extras:` key. Both files are also named in
+# mix.exs's `files:` key, so `mix hex.build` refuses to package the project
+# unless each is present.
 COPY --chown=app:app README.md LICENSE ./
 ```
 
