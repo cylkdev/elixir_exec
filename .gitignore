@@ -1,0 +1,27 @@
+doc/*
+
+### Created by https://www.gitignore.io
+### Elixir ###
+/_build
+/cover
+/deps
+/doc
+/.fetch
+erl_crash.dump
+*.ez
+*.beam
+/config/*.secret.exs
+.elixir_ls/
+
+### Elixir Patch ###
+/doc
+
+### Dialyzer
+dialyzer/
+*.plt
+*.plt.*
+
+autoresearch/
+.claude/
+.superpowers/
+.DS_Store
