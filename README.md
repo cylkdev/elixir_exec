@@ -156,7 +156,7 @@ Options are a keyword list, given as the second argument to `Exec.run/2`, `Exec.
 Read by `Exec` itself:
 
 * `:timeout` — milliseconds bounding a whole `Exec.run/2` call or a whole `Exec.stream/2` enumeration, measured from when it begins. Defaults to five minutes; pass `:infinity` for no bound. `Exec.open/2` accepts the key and ignores it, handing back a handle rather than reading anything; `Exec.read/2` takes its own timeout per call.
-* `:on_output` — a one-argument function `Exec.run/2` calls with each `{:stdout, chunk}` and `{:stderr, chunk}` as it arrives, so a long command is visible while it runs. Chunks, not lines. Ignored by `Exec.stream/2` and `Exec.open/2`, which hand the caller their output already.
+* `:stream` — a one-argument function `Exec.run/2` calls with each `{:stdout, chunk}` and `{:stderr, chunk}` as it arrives, so a long command is visible while it runs. Chunks, not lines. Ignored by `Exec.stream/2` and `Exec.open/2`, which hand the caller their output already.
 * `:owner` — the process whose death stops the program. Defaults to the process that called `Exec.run/2`, `Exec.stream/2` or `Exec.open/2`.
 * `:stdin`, `:stdout`, `:stderr` — whether to connect that one stream to the program. Each defaults to `true`. A program started with `stdout: false` produces no `{:stdout, _}` events at all, and one started with `stdin: false` accepts a write and discards it.
 
@@ -246,8 +246,8 @@ Configuration does not cover the `SHELL` environment variable described under In
 `:erlexec` refuses to start any program while running as root, unless it was configured with `root: true`. Rather than granting that, create a dedicated unprivileged operating system user and have child programs drop to it. The Mix task that creates that user runs on the deploy host, once, and is not part of the runtime:
 
 ```sh
-mix elixir_exec.setup_user                       # creates the "elixir_exec" system user
-mix elixir_exec.setup_user --username myapp_exec # or a user and group of another name
+mix exec.user.create                       # creates the "elixir_exec" system user
+mix exec.user.create --username myapp_exec # or a user and group of another name
 ```
 
 The `:user` option then names that user, per command:
@@ -258,50 +258,144 @@ Exec.run("whoami", user: "elixir_exec")
 
 `config :erlexec, limit_users: ["elixir_exec"]` restricts every command to that user instead, so that a call omitting the `:user` option is refused rather than run with the VM's own privileges.
 
-## Design notes
+---
 
-**The owner is held by a monitor; `:erlexec`'s controller is held by a link.** The two are deliberately different. `:erlexec` kills an operating system process when the controller process it associated with that program dies, and the controller dies with anything it is linked to. Linking the controller therefore reaps the program however the process that owns it goes away — including `Process.exit(pid, :kill)` and the supervision tree coming down, neither of which leaves any cleanup code a chance to run. A monitor there would let the controller outlive the library and orphan the operating system process. The owner is the opposite case: a program that exits non-zero must not take the owner with it, so the owner is watched with a monitor, which carries no such exit, and never with a link.
+## Manually Creating an Exec User
 
-**Supervised children are `:temporary`.** One process supervises each running program, under a `DynamicSupervisor`. A program that has ended has ended, and restarting its supervising process would run the command a second time — a second `git push`, a second `rm`. The supervisor exists to own those processes and take them down when the VM does, not to bring any of them back.
+Run the application and its commands under a dedicated non-root user with only
+the access they need.
 
-**`:erlexec` supervises itself.** It is listed as an ordinary dependency and starts as an ordinary OTP application, with its own supervision tree over a single VM-wide `exec` process. `elixir_exec` does not start it, wrap it, or put it under `elixir_exec`'s own supervisor. `elixir_exec`'s application module starts one thing: the supervisor over running programs.
+### 1. Create the group
 
-**`/bin/sh` is named rather than inherited from `$SHELL`.** Left to itself, `:erlexec` passes a binary command to whatever `SHELL` names, which makes the resulting process tree depend on the machine. `zsh` and `bash` replace themselves with the program when the script is a single simple command, while `dash` — which is `/bin/sh` on Debian — forks and runs the program as a child. That difference decides whether the process this library tracks is the program itself or only its parent, and with it whether `Exec.stop/1` and the lifetime guarantee mean anything. Naming `/bin/sh` settles the question the same way on every machine, as `System.shell/2` does.
+Choose an unused GID and create the group:
 
-## Development
+```bash
+groupadd --gid 10001 sandbox
+````
 
-**Docker is the only supported way to run the test suite.** `docker/test` builds the image and runs a command inside it, defaulting to `mix test`:
+`groupadd --gid` assigns the specified GID, which must be unique unless non-unique
+IDs are explicitly enabled.
 
-```sh
-docker/test                              # the ExUnit suite, including doctests
-docker/test mix format --check-formatted  # formatting
-docker/test mix credo --strict            # linting
-docker/test mix dialyzer                  # type checking
-docker/test mix coveralls                 # coverage
-docker/test mix docs                      # HexDocs output
-docker/test mix hex.build                 # the Hex package
+### 2. Create the user
+
+First, find the path to `nologin`:
+
+```bash
+command -v nologin
 ```
 
-`mix test` run directly on a development machine fails. `test/exec_test.exs` starts `/usr/local/fixtures/ignores-sigterm`, a program that exists only inside the image, and four further tests reach `pgrep`, which macOS and Debian do not agree on, through a shared helper. The image exists because this suite starts real operating system programs and inspects what they print and how they end, so those programs have to be present and have to behave the same way from one run to the next. `docker/Dockerfile` declares which programs the suite needs rather than trusting whatever the machine running the tests happens to have installed.
+Then create the user using that path:
 
-The files that make that work:
+```bash
+useradd \
+  --system \
+  --uid 10001 \
+  --gid sandbox \
+  --no-create-home \
+  --shell /usr/sbin/nologin \
+  sandbox
+```
 
-* `docker/Dockerfile` — the image: Elixir on Debian, plus `build-essential` for compiling `:erlexec`'s `exec-port` and `procps` for `pgrep`. Heavily commented; it is the reference for how the test environment is put together.
-* `docker/test` — the two-line script that builds that image and runs a command in it.
-* `docker/fixtures/ignores-sigterm` — a shell script that ignores `SIGTERM` and loops forever, copied into the image at `/usr/local/fixtures/ignores-sigterm`. A test starts it to confirm that `Exec.stop/1` escalates to `SIGKILL` when a program declines to exit.
-* `.dockerignore` — keeps `deps/` and `_build/` out of the build context, so that macOS-compiled artefacts can never reach the Linux image.
+This configures:
 
-The library itself:
+```text
+username:      sandbox
+UID:           10001
+primary group: sandbox
+GID:           10001
+home:          (none)
+login shell:   /usr/sbin/nologin
+```
 
-* `lib/exec.ex` — the public API, and the reference documentation for it.
-* `lib/exec/` — `Result` and `Error`, which are public, alongside the private application, supervisor and per-program modules.
-* `lib/mix/tasks/elixir_exec.setup_user.ex` — the deploy-host Mix task described above.
-* `priv/scripts/` — the shell scripts that task runs.
+`--gid` sets the primary group. `--no-create-home` keeps the account locked down by
+not creating a home directory.
 
-## Documentation
+Do not set a password. When `useradd` is used without `--password`, the password is
+created in a locked state.
 
-Function-level documentation lives in the `@doc` attributes of `lib/exec.ex` and is published on [HexDocs](https://hexdocs.pm/elixir_exec).
+`nologin` refuses login attempts that use the account's login shell.
 
-## License
+### 3. Restrict the account
 
-Apache-2.0. The full text is in the [LICENSE](LICENSE) file at the root of the repository, and is shipped in the Hex package.
+Because the account is created without a home directory and with a non-login shell,
+there is no home directory to restrict. Only give `sandbox` write access to files and
+directories that the application needs to modify.
+
+### 4. Verify the account
+
+Check the user and group membership:
+
+```bash
+id sandbox
+```
+
+The account should have `sandbox` as its primary group and no supplementary groups.
+
+`useradd` normally assigns only the initial group, but `/etc/default/useradd` can configure
+supplementary groups. If `id` shows an unwanted group, remove it with:
+
+```bash
+gpasswd -d sandbox GROUP
+```
+
+For example:
+
+```bash
+gpasswd -d sandbox docker
+```
+
+Check the account fields:
+
+```bash
+getent passwd sandbox
+```
+
+Verify the UID, GID, home directory, and `nologin` shell.
+
+Check the password state:
+
+```bash
+passwd -S sandbox
+```
+
+The second field should be `L`, meaning the password is locked.
+
+### 5. Do not give erlexec additional privileges
+
+For this sandbox configuration, do not configure `exec-port` to run through `sudo`, install
+it setuid root, or grant it capabilities that allow it to change user identity or perform
+privileged operations.
+
+Those erlexec configurations are specifically intended to let `exec-port` perform operations
+that the application's normal user could not perform.
+
+### 6. Run the application as the sandbox user
+
+For Docker:
+
+```dockerfile
+USER sandbox:sandbox
+```
+
+Docker uses this user and group for subsequent `RUN` instructions and for the container's
+runtime `ENTRYPOINT` and `CMD`.
+
+Specifying both the user and group also causes Docker to ignore any other configured group
+memberships for that user.
+
+### Final configuration
+
+```text
+username:             sandbox
+UID:                  10001
+primary group:        sandbox
+GID:                  10001
+supplementary groups: none
+home:                 /home/sandbox
+login shell:          nologin
+password:             locked
+administrative access: none
+```
+
+Creating the account only establishes its OS identity. Configure filesystem permissions,
+Linux capabilities, container restrictions, network access, and resource limits separately.

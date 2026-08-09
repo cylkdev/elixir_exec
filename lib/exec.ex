@@ -19,6 +19,8 @@ defmodule Exec do
       iex> result.stdout
       "hello\\n"
 
+  ---
+
   ## Command forms
 
   A command is either a binary, run as `/bin/sh -c command`, or a list of
@@ -41,6 +43,8 @@ defmodule Exec do
   > list form, which involves no shell, whenever any part of the command comes
   > from outside the application.
 
+  ---
+
   ## Lifetime
 
   A program never outlives the process that started it. If that process dies,
@@ -57,6 +61,8 @@ defmodule Exec do
 
   Pass `owner: pid` to tie a program's lifetime to a process other than the
   caller.
+
+  ---
 
   ## Exit status
 
@@ -79,6 +85,8 @@ defmodule Exec do
 
   That `"Terminated\\n"` comes from the shell, not from the program. A list
   command has no shell to write it.
+
+  ---
 
   ## Signals sent immediately after starting
 
@@ -106,6 +114,8 @@ defmodule Exec do
   the runner's port program installs is for `SIGCHLD`, which a program ignores
   by default in any case, so nothing a caller can send through `signal/2` is
   swallowed except those four.
+
+  ---
 
   ## Failure to launch
 
@@ -141,7 +151,7 @@ defmodule Exec do
   #
   # Resolving names here, and passing :exec.kill/2 an integer, means erlexec's
   # table is never consulted and that crash is unreachable. The same tables are
-  # read backwards by signal_name/1 below, so a signal number arriving from a
+  # read backwards by lookup_signal/1 below, so a signal number arriving from a
   # dying program is named from the running system's table rather than from
   # erlexec's.
   #
@@ -235,12 +245,12 @@ defmodule Exec do
   @typedoc """
   One element of `stream/2`.
 
-  `:start` opens every enumeration and `:end` closes it, so a consumer can tell
+  `:"$start_of_stream"` opens every enumeration and `:"$end_of_stream"` closes it, so a consumer can tell
   a stream that ran out from one that was cut short. Between them, `{:ok,
   event}` is what the program produced and `{:error, reason}` is why it could
   not be run to the end.
   """
-  @type frame :: :start | {:ok, event()} | {:error, term()} | :end
+  @type frame :: :"$start_of_stream" | {:ok, event()} | {:error, term()} | :"$end_of_stream"
 
   @doc """
   Starts `command` and returns a handle to it.
@@ -404,7 +414,7 @@ defmodule Exec do
   the program exists.
   """
   @spec signal(t(), atom() | non_neg_integer()) :: :ok | {:error, :not_running}
-  def signal(program, signal), do: Program.kill(program, signal_number!(signal))
+  def signal(program, signal), do: Program.kill(program, signal_to_int!(signal))
 
   @doc """
   Runs `command` to completion and returns its output.
@@ -445,7 +455,10 @@ defmodule Exec do
   it arrives, which is what makes a long command visible while it runs rather
   than only once it ends:
 
-      Exec.run("mix deps.compile", stream: fn {_stream, chunk} -> IO.write(chunk) end)
+      Exec.run("mix deps.compile", stream: fn
+        {:stdout, chunk} -> IO.write(chunk)
+        {:stderr, chunk} -> IO.write(chunk)
+      end)
 
   Chunks are what the operating system delivered, not lines: one call may carry
   several lines or half of one, and a progress bar that only ever writes `\\r`
@@ -472,7 +485,7 @@ defmodule Exec do
     stream_func = options[:stream] || noop
 
     command
-    |> chunks(options)
+    |> stream_chunks(options)
     |> Enum.reduce_while({[], []}, fn
       {:ok, {:stdout, data}}, {out, err} ->
         stream_func.({:stdout, data})
@@ -482,21 +495,21 @@ defmodule Exec do
         stream_func.({:stderr, data})
         {:cont, {out, [data | err]}}
 
-      # Halting here rather than waiting for `:end` costs nothing: the frames
+      # Halting here rather than waiting for `:"$end_of_stream"` costs nothing: the frames
       # after a terminal one carry no output, and the stream stops the program
       # on a halt exactly as it does on exhaustion.
       {:ok, {:exit, status}}, {out, err} ->
-        {:halt, {:ok, result(out, err, status)}}
+        {:halt, {:ok, build_result(out, err, status)}}
 
       {:error, reason}, _acc ->
         {:halt, {:error, reason}}
 
-      :start, acc ->
+      :"$start_of_stream", acc ->
         {:cont, acc}
     end)
   end
 
-  defp result(out, err, status) do
+  defp build_result(out, err, status) do
     %Result{
       stdout: out |> Enum.reverse() |> IO.iodata_to_binary(),
       stderr: err |> Enum.reverse() |> IO.iodata_to_binary(),
@@ -510,14 +523,14 @@ defmodule Exec do
   Nothing runs until enumeration begins, so a stream that is never enumerated
   never starts a program.
 
-  Every enumeration is a frame: `:start` first, `:end` last, and in between the
+  Every enumeration is a frame: `:"$start_of_stream"` first, `:"$end_of_stream"` last, and in between the
   program's output as `{:ok, event}` and any failure as `{:error, reason}`.
 
-      :start
+      :"$start_of_stream"
       {:ok, {:stdout, "hello\\n"}}
       {:ok, {:stderr, "oops\\n"}}
       {:ok, {:exit, 0}}
-      :end
+      :"$end_of_stream"
 
   So a consumer can tell a command that ended from one that never started, and
   a stream that ran out from one that was cut short, without inspecting the
@@ -525,12 +538,12 @@ defmodule Exec do
 
       Exec.stream("mix test")
       |> Enum.each(fn
-        :start -> Logger.info("started")
+        :"$start_of_stream" -> Logger.info("started")
         {:ok, {:stdout, line}} -> Logger.info(line)
         {:ok, {:stderr, line}} -> Logger.warning(line)
         {:ok, {:exit, status}} -> Logger.info("exited \#{inspect(status)}")
         {:error, reason} -> Logger.error("failed: \#{inspect(reason)}")
-        :end -> Logger.info("done")
+        :"$end_of_stream" -> Logger.info("done")
       end)
 
   Output is delivered as lines. They keep their delimiter, and a line that never
@@ -538,13 +551,13 @@ defmodule Exec do
   Standard output and standard error are each in order, but not ordered relative
   to each other.
 
-  A failure ends the stream: `{:error, reason}` is followed by `:end` and
+  A failure ends the stream: `{:error, reason}` is followed by `:"$end_of_stream"` and
   nothing else. There is no `{:ok, {:exit, _}}` in that case, because the
   program either never started or was stopped before it could exit.
 
   Halting early — through `Enum.take/2`, a `Enum.reduce_while/3` halt, or an
   exception — stops the program, and the frames after the halt are not emitted.
-  A consumer that halted knows it halted; the absent `:end` says so to anyone
+  A consumer that halted knows it halted; the absent `:"$end_of_stream"` says so to anyone
   further down the pipeline.
 
   > #### Watch out {: .warning}
@@ -555,10 +568,10 @@ defmodule Exec do
   ## Examples
 
       iex> ~S(printf 'a\\nb\\n') |> Exec.stream() |> Enum.to_list()
-      [:start, {:ok, {:stdout, "a\\n"}}, {:ok, {:stdout, "b\\n"}}, {:ok, {:exit, 0}}, :end]
+      [:"$start_of_stream", {:ok, {:stdout, "a\\n"}}, {:ok, {:stdout, "b\\n"}}, {:ok, {:exit, 0}}, :"$end_of_stream"]
 
       iex> Exec.stream("") |> Enum.to_list()
-      [:start, {:error, :empty_command}, :end]
+      [:"$start_of_stream", {:error, :empty_command}, :"$end_of_stream"]
 
       "tail -f /var/log/system.log"
       |> Exec.stream(timeout: :infinity)
@@ -584,7 +597,7 @@ defmodule Exec do
   @spec stream(binary() | [binary()], options()) :: Enumerable.t(frame())
   def stream(command, options \\ []) do
     command
-    |> chunks(options)
+    |> stream_chunks(options)
     |> Stream.transform({"", ""}, &split_frame/2)
   end
 
@@ -592,7 +605,7 @@ defmodule Exec do
   # framing and the program's lifetime are written once and cannot drift apart.
   # It yields the operating system's chunks; assembling them into lines belongs
   # to stream/2, which is the only consumer that wants them.
-  defp chunks(command, options) do
+  defp stream_chunks(command, options) do
     timeout = options[:timeout] || @default_timeout
 
     Stream.resource(
@@ -600,53 +613,65 @@ defmodule Exec do
       # built: a stream held and enumerated later gets its whole budget. It is
       # stamped before the open below, so a slow start spends the caller's
       # budget rather than being extra to it.
-      fn -> {:starting, command, options, deadline_after(timeout)} end,
-      &next_frame/1,
-      &stop_unless_exited/1
+      fn -> {:init, command, options, deadline_after(timeout)} end,
+      &next_stream_chunk/1,
+      &finalize_stream/1
     )
   end
 
-  defp next_frame({:starting, command, options, deadline}) do
-    {[:start], {:opening, command, options, deadline}}
+  defp next_stream_chunk({:init, command, options, deadline}) do
+    {[:"$start_of_stream"], {:open, command, options, deadline}}
   end
 
-  defp next_frame({:opening, command, options, deadline}) do
+  defp next_stream_chunk({:open, command, options, deadline}) do
     case open(command, options) do
-      {:ok, program} -> {[], {:reading, program, deadline}}
-      {:error, reason} -> {[{:error, reason}], {:ending, nil}}
+      {:ok, program} -> {[], {:continue, program, deadline}}
+      {:error, reason} -> {[{:error, reason}], {:error, nil}}
     end
   end
 
-  defp next_frame({:reading, program, deadline}) do
+  defp next_stream_chunk({:continue, program, deadline}) do
     case read(program, remaining_timeout(deadline)) do
       # The exit is the last event there is, and reading it spends the handle,
-      # so there is no program left to carry into the ending state.
+      # so there is no program left to carry into the terminal state.
       {:ok, {:exit, _} = event} ->
-        {[{:ok, event}], {:ending, nil}}
+        {[{:ok, event}], {:exit, nil}}
 
       {:ok, event} ->
-        {[{:ok, event}], {:reading, program, deadline}}
+        {[{:ok, event}], {:continue, program, deadline}}
 
       # The program outlived the budget. It is still running, and nothing will
-      # read it again, so the ending state carries it to be stopped.
+      # read it again, so the terminal state carries it to be stopped.
       {:error, :timeout} ->
-        {[{:error, :timeout}], {:ending, program}}
+        {[{:error, :timeout}], {:error, program}}
     end
   end
 
-  defp next_frame({:ending, program}), do: {[:end], {:ended, program}}
-  defp next_frame({:ended, _program} = state), do: {:halt, state}
+  defp next_stream_chunk({:exit, _program}), do: {[:"$end_of_stream"], nil}
+  defp next_stream_chunk({:error, _program}), do: {[:"$end_of_stream"], nil}
+  defp next_stream_chunk(nil), do: {:halt, nil}
 
   # Runs on exhaustion, on an early halt and on an exception alike, which is
   # what makes the program's lifetime the stream's responsibility rather than
   # every consumer's. A `nil` is a program that already ended on its own.
-  defp stop_unless_exited({:reading, program, _deadline}), do: Program.shutdown(program)
+  defp finalize_stream(response) do
+    case response do
+      {:continue, program, _deadline} ->
+        Program.shutdown(program)
 
-  defp stop_unless_exited({_ending_or_ended, program}) when is_pid(program) do
-    Program.shutdown(program)
+      {:exit, program} when is_pid(program) ->
+        Program.shutdown(program)
+
+      {:error, program} when is_pid(program) ->
+        Program.shutdown(program)
+
+      {:error, nil} ->
+        :ok
+
+      :"$end_of_stream" ->
+        :ok
+    end
   end
-
-  defp stop_unless_exited(_state), do: :ok
 
   # Output arrives in chunks, not lines, and one line can span two chunks, so
   # the trailing partial is carried to prepend to the next chunk.
@@ -666,7 +691,9 @@ defmodule Exec do
   # before it timed out is still output the caller asked for.
   defp split_frame({:ok, {:exit, _}} = frame, buffers), do: flush(buffers, frame)
   defp split_frame({:error, _} = frame, buffers), do: flush(buffers, frame)
-  defp split_frame(frame, buffers) when frame in [:start, :end], do: {[frame], buffers}
+
+  defp split_frame(frame, buffers) when frame in [:"$start_of_stream", :"$end_of_stream"],
+    do: {[frame], buffers}
 
   defp flush({out, err}, frame) do
     {trailing_line(:stdout, out) ++ trailing_line(:stderr, err) ++ [frame], {"", ""}}
@@ -736,7 +763,7 @@ defmodule Exec do
   def decode_exit_reason({:exit_status, raw}) do
     case Bitwise.band(raw, 0xFF) do
       0 -> Bitwise.bsr(raw, 8)
-      _ -> {:signal, signal_name(Bitwise.band(raw, 0x7F))}
+      _ -> {:signal, lookup_signal(Bitwise.band(raw, 0x7F))}
     end
   end
 
@@ -744,7 +771,7 @@ defmodule Exec do
 
   # A number the running system's table has no name for is returned as it
   # stands, which says less than a name but never says something false.
-  defp signal_name(number) do
+  defp lookup_signal(number) do
     signal_table()
     |> Enum.find_value(fn {name, n} -> if n === number, do: name end)
     |> Kernel.||(number)
@@ -759,9 +786,9 @@ defmodule Exec do
     end
   end
 
-  defp signal_number!(number) when is_integer(number), do: number
+  defp signal_to_int!(number) when is_integer(number), do: number
 
-  defp signal_number!(name) when is_atom(name) do
+  defp signal_to_int!(name) when is_atom(name) do
     case Map.fetch(signal_table(), name) do
       {:ok, number} ->
         number

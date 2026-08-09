@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 #
-# setup-erlexec-user.sh
+# create-erlexec-user.sh
 #
 # Create a dedicated NON-root system user that child commands can drop to,
 # so a project never has to run erlexec with `root: true` or set the
 # exec-port SUID bit.
 #
 # This is the safe alternative to privilege escalation: erlexec keeps
-# `root: false` (the ElixirExec default), and individual commands run as
-# this unprivileged user via ElixirExec's per-command `:user` / `:group`
+# `root: false` (the Exec default), and individual commands run as
+# this unprivileged user via Exec's per-command `:user` / `:group`
 # options, or the exec-level `limit_users` allow-list.
 #
 # Designed for non-interactive use (CI, provisioning):
@@ -17,14 +17,14 @@
 #   - Creates a locked-down account: system user, no home, no login shell.
 #
 # Usage:
-#   ./setup-erlexec-user.sh [--username NAME] [--group GROUP]
+#   ./create-erlexec-user.sh [--username NAME] [--group GROUP]
 #
 #   --username NAME   User to create (default: elixir_exec)
 #   --group GROUP     Primary group (default: same as username)
 #
 # After creation, run commands as the user:
 #
-#   ElixirExec.run("whoami", sync: true, stdout: true, user: "elixir_exec")
+#   Exec.run("whoami", sync: true, stdout: true, user: "elixir_exec")
 #
 # or restrict at the exec level in config:
 #
@@ -112,6 +112,6 @@ esac
 
 echo "Created non-root user '${USERNAME}' (group '${GROUP}')."
 echo "Run commands as it, e.g.:"
-echo "  ElixirExec.run(\"whoami\", sync: true, stdout: true, user: \"${USERNAME}\")"
+echo "  Exec.run(\"whoami\", sync: true, stdout: true, user: \"${USERNAME}\")"
 echo "or restrict at the exec level:"
 echo "  config :elixir_exec, limit_users: [\"${USERNAME}\"]"

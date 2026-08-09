@@ -1,6 +1,10 @@
 defmodule Exec.Program do
   @moduledoc false
 
+  alias Exec.Core
+
+  require Logger
+
   # One process per running program.
   #
   # It calls :exec.run, so the program's output is delivered here -- a bare
@@ -49,11 +53,12 @@ defmodule Exec.Program do
 
   # :infinity on the call itself: the timeout is the worker's to enforce, so a
   # slow program never exits the caller and never leaves a late reply behind.
-  def read(conn, timeout), do: GenServer.call(conn, {:read, timeout}, :infinity)
+  def read(conn, timeout, opts \\ []),
+    do: GenServer.call(conn, {:read, timeout}, opts[:timeout] || :infinity)
 
-  def write(conn, data), do: call(conn, {:write, data})
+  def write(conn, data, opts \\ []), do: call(conn, {:write, data}, opts)
 
-  def stop(conn), do: call(conn, :stop)
+  def stop(conn, opts \\ []), do: call(conn, :stop, opts)
 
   # stop/1 ends the OS program and leaves this process alive, because the caller
   # still has the remaining events -- including the exit -- to read. shutdown/1
@@ -69,13 +74,13 @@ defmodule Exec.Program do
   # The process may already be gone -- it stops itself on the exit event, which
   # can land between the caller's decision and this call -- so a :noproc exit is
   # the expected outcome, not an error.
-  def shutdown(conn) do
-    GenServer.stop(conn, :normal)
+  def shutdown(conn, opts \\ []) do
+    GenServer.stop(conn, :normal, opts[:timeout] || 5_000)
   catch
     :exit, {:noproc, _} -> :ok
   end
 
-  def kill(conn, signal), do: call(conn, {:kill, signal})
+  def kill(conn, signal, opts \\ []), do: call(conn, {:kill, signal}, opts)
 
   # A handle is spent once its exit has been read: this process stops itself on
   # that read, so a later call finds nothing there. GenServer.call exits the
@@ -84,8 +89,8 @@ defmodule Exec.Program do
   #
   # read/2 deliberately does not go through here. Its exit is how a read loop
   # terminates, and returning a value instead would make a naive loop spin.
-  defp call(conn, message) do
-    GenServer.call(conn, message, 5_000)
+  defp call(conn, message, opts) do
+    GenServer.call(conn, message, opts[:timeout] || 5_000)
   catch
     :exit, {reason, _} when reason in [:noproc, :normal] -> {:error, :not_running}
   end
@@ -101,10 +106,11 @@ defmodule Exec.Program do
   def init({command, owner, opts}) do
     Process.flag(:trap_exit, true)
 
-    case :exec.run(command, build_exec_options(opts)) do
-      {:ok, _controller, os_pid} ->
+    case Core.run(command, opts) do
+      {:ok, controller_pid, os_pid} ->
         {:ok,
          %{
+           controller_pid: controller_pid,
            os_pid: os_pid,
            owner_ref: Process.monitor(owner),
            events: :queue.new(),
@@ -151,18 +157,18 @@ defmodule Exec.Program do
   end
 
   def handle_call({:write, :eof}, _from, state) do
-    {:reply, :exec.send(state.os_pid, :eof), state}
+    {:reply, Core.send(state.os_pid, :eof), state}
   end
 
   def handle_call({:write, data}, _from, state) do
-    {:reply, :exec.send(state.os_pid, IO.iodata_to_binary(data)), state}
+    {:reply, Core.send(state.os_pid, IO.iodata_to_binary(data)), state}
   end
 
   # stop sends SIGTERM and escalates to SIGKILL; kill sends one signal now.
-  def handle_call(:stop, _from, state), do: {:reply, :exec.stop(state.os_pid), state}
+  def handle_call(:stop, _from, state), do: {:reply, Core.stop(state.os_pid), state}
 
   def handle_call({:kill, signal}, _from, state) do
-    {:reply, :exec.kill(state.os_pid, signal), schedule_resend(state, signal)}
+    {:reply, Core.kill(state.os_pid, signal), schedule_resend(state, signal)}
   end
 
   @impl GenServer
@@ -195,7 +201,16 @@ defmodule Exec.Program do
   # handler may have swallowed. Send it again, and keep doing so until it exits
   # or the spawn window closes.
   def handle_info({:resend, signal}, %{exited?: false} = state) do
-    _ = :exec.kill(state.os_pid, signal)
+    case Core.kill(state.os_pid, signal) do
+      :ok ->
+        :ok
+
+      {:error, reason} ->
+        Logger.error(
+          "resending signal #{signal} to pid #{state.os_pid} failed: #{inspect(reason)}"
+        )
+    end
+
     {:noreply, schedule_resend(state, signal)}
   end
 
@@ -216,13 +231,13 @@ defmodule Exec.Program do
   end
 
   defp deliver_or_queue(%{reader: {from, timer}} = state, {:exit, _} = event) do
-    _ = cancel_read_timer(timer)
+    cancel_read_timer(timer)
     GenServer.reply(from, {:ok, event})
     {:stop, :normal, %{state | reader: nil}}
   end
 
   defp deliver_or_queue(%{reader: {from, timer}} = state, event) do
-    _ = cancel_read_timer(timer)
+    cancel_read_timer(timer)
     GenServer.reply(from, {:ok, event})
     {:noreply, %{state | reader: nil}}
   end
@@ -239,7 +254,11 @@ defmodule Exec.Program do
   end
 
   defp cancel_read_timer(nil), do: :ok
-  defp cancel_read_timer({timer, _token}), do: Process.cancel_timer(timer)
+
+  defp cancel_read_timer({timer, _token}) do
+    Process.cancel_timer(timer)
+    :ok
+  end
 
   # A signal swallowed in the fork-to-execve window never reached the program, so
   # sending it again is the difference between the caller's instruction being
@@ -262,48 +281,12 @@ defmodule Exec.Program do
   # Delete this once erlexec resets the child's signal dispositions before
   # execve; the reproduction and the proposed fix are in ../erlexec_signal_loss.
   defp schedule_resend(state, signal) when signal in @swallowable_signals do
-    _ =
-      if System.monotonic_time(:millisecond) - state.started_at <= @spawn_window_ms do
-        Process.send_after(self(), {:resend, signal}, @resend_after_ms)
-      end
+    if System.monotonic_time(:millisecond) - state.started_at <= @spawn_window_ms do
+      Process.send_after(self(), {:resend, signal}, @resend_after_ms)
+    end
 
     state
   end
 
   defp schedule_resend(state, _signal), do: state
-
-  defp build_exec_options(opts) do
-    stdin? = Keyword.get(opts, :stdin, true)
-    stdout? = Keyword.get(opts, :stdout, true)
-    stderr? = Keyword.get(opts, :stderr, true)
-
-    # :link is what makes erlexec reap the program when this process dies; see
-    # the module comment above.
-    #
-    # {:group, 0} puts the program in a new process group of its own, and
-    # :kill_group makes erlexec signal that whole group rather than the single
-    # pid it tracked. Both are needed, and only together.
-    #
-    # A string command is interpreted by /bin/sh, which may run the program as a
-    # child rather than becoming it. Signalling only the tracked pid then kills
-    # the shell and leaves the program orphaned to init -- so stop/1 returns :ok
-    # while the program keeps running. Signalling the group reaches the program
-    # whichever shape the shell chose.
-    #
-    # :kill_group without {:group, 0} would signal erlexec's own process group,
-    # killing the VM-wide exec-port and every other running program with it.
-    proplist = [:link, :kill_group, {:group, 0}]
-    proplist = if stdin?, do: [:stdin | proplist], else: proplist
-    proplist = if stdout?, do: [:stdout | proplist], else: proplist
-    proplist = if stderr?, do: [:stderr | proplist], else: proplist
-
-    # Only the three stream flags read just above are dropped. Exec.open/2 has
-    # already taken :owner and :timeout, which never reach this module.
-    #
-    # :group is deliberately absent: this module sets it, and a caller
-    # overriding it would silently break the lifetime guarantee above.
-    run_opts = for {key, value} <- opts, key not in [:stdin, :stdout, :stderr], do: {key, value}
-
-    proplist ++ run_opts
-  end
 end

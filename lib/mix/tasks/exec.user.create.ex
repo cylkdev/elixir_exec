@@ -1,4 +1,4 @@
-defmodule Mix.Tasks.ElixirExec.SetupUser do
+defmodule Mix.Tasks.Exec.User.Create do
   @shortdoc "Create a dedicated non-root OS user for running child commands"
 
   @moduledoc """
@@ -6,8 +6,8 @@ defmodule Mix.Tasks.ElixirExec.SetupUser do
   commands can drop to, so erlexec never has to run as root. Root
   execution stays disabled.
 
-      mix elixir_exec.setup_user
-      mix elixir_exec.setup_user --username myapp_exec --group myapp
+      mix exec.user.create
+      mix exec.user.create --username myapp_exec --group myapp
 
   Then run commands as that user:
 
@@ -18,7 +18,7 @@ defmodule Mix.Tasks.ElixirExec.SetupUser do
 
       config :erlexec, limit_users: ["elixir_exec"]
 
-  This is a thin wrapper over `priv/scripts/setup-erlexec-user.sh`, which
+  This is a thin wrapper over `priv/scripts/create-erlexec-user.sh`, which
   performs the platform-specific (Linux/macOS) account creation and will
   re-exec itself via `sudo` for the privileged step.
   """
@@ -27,14 +27,36 @@ defmodule Mix.Tasks.ElixirExec.SetupUser do
 
   @impl Mix.Task
   def run(argv) do
+    Mix.Exec.Utils.ensure_app_started!()
+
     script = script_path()
 
     unless File.exists?(script) do
-      Mix.raise("setup-erlexec-user.sh not found at #{script}")
+      Mix.raise("create-erlexec-user.sh not found at #{script}")
     end
 
-    {_out, status} = System.cmd(script, argv, into: IO.stream(:stdio, :line))
-    if status !== 0, do: Mix.raise("setup-erlexec-user.sh exited with status #{status}")
+    {opts, _, _} =
+      OptionParser.parse(argv,
+        strict: [username: :string, group: :string],
+        aliases: [u: :username, g: :group]
+      )
+
+    username = Keyword.fetch!(opts, :username)
+    group = Keyword.get(opts, :group, username)
+
+    case Exec.Core.run([script, "--username", username, "--group", group], sync: true, root: true) do
+      {:ok, result} ->
+        print_stdout(result.stdout)
+
+      {:error, reason} ->
+        Mix.raise("create-erlexec-user.sh failed: #{inspect(reason)}")
+    end
+  end
+
+  defp print_stdout(entries) do
+    entries
+    |> List.flatten()
+    |> Enum.each(&IO.write/1)
   end
 
   # Resolves priv/ whether running in this repo or from a consumer's
@@ -43,6 +65,6 @@ defmodule Mix.Tasks.ElixirExec.SetupUser do
   defp script_path do
     priv_dir = :code.priv_dir(:elixir_exec)
     priv = List.to_string(priv_dir)
-    Path.join([priv, "scripts", "setup-erlexec-user.sh"])
+    Path.join([priv, "scripts", "create-erlexec-user.sh"])
   end
 end

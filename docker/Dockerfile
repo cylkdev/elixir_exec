@@ -241,7 +241,7 @@ COPY --chown=app:app .formatter.exs .credo.exs .dialyzer-ignore.exs ./
 # other command in this image reads it.
 COPY --chown=app:app README.md LICENSE ./
 
-# priv/ holds the shell scripts that `mix elixir_exec.setup_user` runs. No test
+# priv/ holds the shell scripts that `mix exec.user.create` runs. No test
 # executes them, but mix.exs names priv in the same `files:` key, so
 # `mix hex.build` fails with "Missing files: priv" unless the directory is here.
 COPY --chown=app:app priv priv
