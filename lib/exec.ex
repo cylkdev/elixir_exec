@@ -417,6 +417,30 @@ defmodule Exec do
   def signal(program, signal), do: Program.kill(program, signal_to_int!(signal))
 
   @doc """
+  Returns the operating-system pid of the program behind `program`.
+
+  The handle is this library's, and means nothing outside the VM that holds it.
+  The os pid is the system's, and is what `ps`, `kill` and a pid file written
+  for some later process all speak in.
+
+  Answered after the program has exited too, up until the handle is spent by
+  reading that exit, so a caller recording the pid somewhere durable can still
+  read it back. A pid belonging to a program that has ended may of course have
+  been reused by then.
+
+  ## Examples
+
+      {:ok, program} = Exec.open("sleep 30")
+      {:ok, os_pid} = Exec.os_pid(program)
+
+  ## Errors
+
+    * `{:error, :not_running}` - the handle is spent, i.e. its exit was read.
+  """
+  @spec os_pid(t()) :: {:ok, non_neg_integer()} | {:error, :not_running}
+  def os_pid(program), do: Program.os_pid(program)
+
+  @doc """
   Runs `command` to completion and returns its output.
 
   Consumes `stream/2` eagerly: the frames it yields are folded into a
