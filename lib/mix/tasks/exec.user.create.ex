@@ -44,7 +44,11 @@ defmodule Mix.Tasks.Exec.User.Create do
     username = Keyword.fetch!(opts, :username)
     group = Keyword.get(opts, :group, username)
 
-    case Exec.Core.run([script, "--username", username, "--group", group], sync: true, root: true) do
+    # No `root: true` here: that is a server option, not a command option, and
+    # erlexec fails the whole run with `{:invalid_option, :root}` when it is
+    # passed per command. The script re-execs itself through `sudo` for the one
+    # privileged step, so the command itself does not need to start elevated.
+    case Exec.Core.run([script, "--username", username, "--group", group], sync: true) do
       {:ok, result} ->
         print_stdout(result.stdout)
 

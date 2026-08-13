@@ -665,7 +665,19 @@ defmodule Exec do
       {:error, program} when is_pid(program) ->
         Program.shutdown(program)
 
+      # Nothing left to shut down. `{:exit, nil}` is the ordinary success path:
+      # reading the exit event spends the handle, so `next_stream_chunk/1`
+      # carries no program into the terminal state. `nil` is the state after
+      # that terminal chunk emitted `:"$end_of_stream"` and the stream halted.
+      # Neither was matched here, so every command that ran to completion
+      # crashed in cleanup with a CaseClauseError.
+      {:exit, nil} ->
+        :ok
+
       {:error, nil} ->
+        :ok
+
+      nil ->
         :ok
 
       :"$end_of_stream" ->

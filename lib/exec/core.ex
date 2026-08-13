@@ -3,29 +3,30 @@ defmodule Exec.Core do
   `Exec.Core` provides an API for running commands in a subprocess, capturing their output and exit status.
   """
 
-  user = String.trim(Application.compile_env(:erlexec, :user, ""))
-  limit_users = Application.compile_env(:erlexec, :limit_users, [])
-  capabilities = Application.compile_env(:erlexec, :capabilities, [])
-
   @default_kill_command "kill -TERM ${CHILD_PID}"
 
-  @user user
-  @limit_users if @user === "", do: limit_users, else: Enum.uniq([@user | limit_users])
-  @capabilities capabilities
-
-  if Mix.env() === :prod do
-    if @user === "" do
-      raise "user must be set"
-    end
-
-    if String.downcase(@user) === "root" do
-      raise "user cannot be set to root"
-    end
-
-    if not Enum.member?(@limit_users, @user) and @limit_users !== [] do
-      raise "User #{inspect(@user)} is not in the allowed, expected one of: #{Enum.join(@limit_users, ", ")}"
-    end
-  end
+  # erlexec splits its options in two, and the split is not cosmetic.
+  #
+  # `root`, `limit_users`, `portexe`, `alarm`, `args`, `verbose` and `valgrind`
+  # configure the `exec` *server*. It reads them from the `:erlexec` application
+  # environment once, when the application boots — see `init/1` in erlexec's
+  # `exec.erl`, which keeps only that set.
+  #
+  # Everything else is a *command* option, validated per run by
+  # `check_cmd_options/5`. That function ends in a catch-all that throws
+  # `{invalid_option, Opt}`, so handing it a server option does not warn or get
+  # ignored: it fails the whole command.
+  #
+  # So this module never invents `root:` or `limit_users:` for a run. Configure
+  # them where erlexec actually reads them, before it starts:
+  #
+  #     config :erlexec, root: true, user: "app", limit_users: ["app"]
+  #
+  # This used to be read here with `Application.compile_env/3` and baked in at
+  # build time, which was wrong twice over: it froze a deployment detail into
+  # the artifact, and it appended `root:`/`limit_users:` to every command, so
+  # configuring a user broke every call with `{:invalid_option, :root}`.
+  @server_options [:root, :limit_users]
 
   @doc """
   Run a command with the given options.
@@ -45,12 +46,18 @@ defmodule Exec.Core do
     * `:pty` — Whether to allocate a pseudo-terminal for the command. Defaults to false.
     * `:pty_echo` — Whether to enable echo on the pseudo-terminal. Defaults to true.
     * `:debug` — Whether to enable debug logging for the command. Defaults to false.
-    * `:user` — The user to run the command as. Defaults to "" and may only be configured at compile time via `config :erlexec, user: ...`.
-    * `:root` — Whether to allow the command to run as root. Defaults to false.
-    * `:limit_users` — A list of users the command is allowed to run as. Defaults to an empty list and may only be configured at compile time via `config :erlexec, limit_users: ...`.
-    * `:capabilities` — A list of capabilities to grant the command. Defaults to an empty list and may only be configured at compile time via `config :erlexec, capabilities: ...`.
+    * `:user` — The user to run the command as. Unset by default, meaning the
+      command runs as whoever is running the VM. Requires the server to be
+      started with `root: true` and this name in its `limit_users`.
+    * `:capabilities` — Capabilities to grant the command, or `:all`. Unset by default.
     * `:link` — Whether to link the command process to the calling process. Defaults to true.
     * `:kill_group` — Whether to kill the entire process group when stopping the command. Defaults to true.
+
+  `:root` and `:limit_users` are not accepted here and are dropped if passed.
+  They configure the `exec` server rather than a command, and are read from the
+  application environment when `:erlexec` boots:
+
+      config :erlexec, root: true, user: "app", limit_users: ["app"]
 
   These reserved options are set conservatively so commands run with the least privilege necessary
   and are less likely to affect the system or other processes unexpectedly.
@@ -119,7 +126,7 @@ defmodule Exec.Core do
   #
   # The option `:executable` is intentionally omitted.
   defp build_run_options(opts) do
-    opts = Keyword.drop(opts, [:user, :limit_users, :capabilities])
+    opts = Keyword.drop(opts, @server_options)
 
     stdin? = Keyword.get(opts, :stdin, true)
     stdout? = Keyword.get(opts, :stdout, true)
@@ -144,7 +151,14 @@ defmodule Exec.Core do
     kill = opts[:kill] || @default_kill_command
     kill_timeout = to_nearest_second(opts[:kill_timeout] || :timer.seconds(5))
 
-    if @user === "root" do
+    # `:user` and `:capabilities` are command options erlexec validates itself:
+    # it rejects a user outside the server's configured `limit_users`, and
+    # prohibits "root" outright. The check below is kept anyway so the refusal
+    # names the reason here, at the call, rather than as a port error.
+    user = Keyword.get(opts, :user)
+    capabilities = Keyword.get(opts, :capabilities)
+
+    if is_binary(user) and String.downcase(String.trim(user)) === "root" do
       raise "Running commands as root is not allowed. Use a non-root user."
     end
 
@@ -156,7 +170,6 @@ defmodule Exec.Core do
     proplist = if sync?, do: [:sync | proplist], else: proplist
     proplist = if monitor?, do: [:monitor | proplist], else: proplist
     proplist = if debug?, do: [:debug | proplist], else: proplist
-    proplist = if @user != "", do: [:root | proplist], else: proplist
 
     # :link is what makes erlexec reap the program when this process dies; see
     # the module comment above.
@@ -171,24 +184,19 @@ defmodule Exec.Core do
 
     other = []
 
-    # Setting user requires root: true at startup and a non-empty limit_users list.
+    # Impersonating a user needs the server started with `root: true` and the
+    # name present in its `limit_users`; erlexec throws
+    # "User <name> is not allowed to run commands!" otherwise.
     other =
-      if @user !== "" do
-        Keyword.put(other, :user, @user)
+      if user !== nil do
+        Keyword.put(other, :user, user)
       else
         other
       end
 
     other =
-      if @limit_users !== [] do
-        Keyword.put(other, :limit_users, @limit_users)
-      else
-        other
-      end
-
-    other =
-      if @capabilities !== [] do
-        Keyword.put(other, :capabilities, @capabilities)
+      if capabilities !== nil do
+        Keyword.put(other, :capabilities, capabilities)
       else
         other
       end
