@@ -82,7 +82,7 @@ defmodule Exec.Program do
 
   def kill(conn, signal, opts \\ []), do: call(conn, {:kill, signal}, opts)
 
-  def os_pid(conn, opts \\ []), do: call(conn, :os_pid, opts)
+  def info(conn, opts \\ []), do: call(conn, :info, opts)
 
   # A handle is spent once its exit has been read: this process stops itself on
   # that read, so a later call finds nothing there. GenServer.call exits the
@@ -161,8 +161,10 @@ defmodule Exec.Program do
   # Answered whether or not the program has exited: a caller that recorded the
   # pid somewhere durable -- a pid file outliving this VM -- still wants it back
   # after the program ends, and unlike write/stop/kill, reading it does nothing.
-  def handle_call(:os_pid, _from, state) do
-    {:reply, {:ok, state.os_pid}, state}
+  def handle_call(:info, _from, state) do
+    info = %{handle_pid: self(), controller_pid: state.controller_pid, os_pid: state.os_pid}
+
+    {:reply, {:ok, info}, state}
   end
 
   def handle_call({:write, :eof}, _from, state) do

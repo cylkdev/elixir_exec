@@ -417,28 +417,35 @@ defmodule Exec do
   def signal(program, signal), do: Program.kill(program, signal_to_int!(signal))
 
   @doc """
-  Returns the operating-system pid of the program behind `program`.
+  Returns the processes behind `program`.
 
-  The handle is this library's, and means nothing outside the VM that holds it.
-  The os pid is the system's, and is what `ps`, `kill` and a pid file written
-  for some later process all speak in.
+    * `:handle_pid` - the Erlang process `open/2` returned as the handle. It
+      holds the program's output until `read/2` asks for it, and is what
+      `stop/1` and `signal/2` talk to.
+    * `:controller_pid` - the Erlang process erlexec starts for the program and
+      links to it. erlexec: "Every started OS process is linked to a spawned
+      light-weight Erlang process returned by the run/2, run_link/2 command."
+    * `:os_pid` - the process id the operating system gives the running
+      program, the number `ps` and `kill` use.
 
   Answered after the program has exited too, up until the handle is spent by
-  reading that exit, so a caller recording the pid somewhere durable can still
-  read it back. A pid belonging to a program that has ended may of course have
-  been reused by then.
+  reading that exit, so a caller recording the os pid somewhere durable can
+  still read it back. A pid belonging to a program that has ended may of course
+  have been reused by then.
 
   ## Examples
 
       {:ok, program} = Exec.open("sleep 30")
-      {:ok, os_pid} = Exec.os_pid(program)
+      {:ok, %{handle_pid: ^program, controller_pid: controller_pid, os_pid: os_pid}} = Exec.info(program)
 
   ## Errors
 
     * `{:error, :not_running}` - the handle is spent, i.e. its exit was read.
   """
-  @spec os_pid(t()) :: {:ok, non_neg_integer()} | {:error, :not_running}
-  def os_pid(program), do: Program.os_pid(program)
+  @spec info(t()) ::
+          {:ok, %{handle_pid: pid(), controller_pid: pid(), os_pid: non_neg_integer()}}
+          | {:error, :not_running}
+  def info(program), do: Program.info(program)
 
   @doc """
   Runs `command` to completion and returns its output.
