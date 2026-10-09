@@ -158,7 +158,7 @@ defmodule Exec.Program do
   # ending. Its reason carries the exit status (exec.erl:1224-1231). The exit is
   # the last thing the program produces, so this process ends with it.
   def handle_info({:EXIT, _controller, reason}, state) do
-    send(state.owner, {self(), %{exit_reason: exit_reason(reason)}})
+    send(state.owner, {self(), Exec.Signal.decode_exit(exit_reason(reason))})
     {:stop, :normal, state}
   end
 

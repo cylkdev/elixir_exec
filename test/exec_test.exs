@@ -8,6 +8,21 @@ defmodule ExecTest do
       assert {:ok, %{stdout: "hello\n"}} = Exec.read(program)
     end
 
+    test "sends each event to the owner's mailbox as {program, event}" do
+      {:ok, program} = Exec.open(["echo", "hello"])
+
+      assert_receive {^program, %{stdout: "hello\n"}}
+
+      assert_receive {^program,
+                      %{
+                        exit_reason: 0,
+                        exit_code: 0,
+                        signal: nil,
+                        exit_status: nil,
+                        core_dump: false
+                      }}
+    end
+
     test "returns the executable's name when the executable is missing from PATH" do
       assert {:error, {:executable_not_found, "executable-outside-path"}} =
                Exec.open(["executable-outside-path"])
