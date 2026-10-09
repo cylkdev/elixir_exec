@@ -1,6 +1,8 @@
 defmodule ExecTest do
   use ExUnit.Case
 
+  import ExUnit.CaptureLog
+
   describe "open/2" do
     test "starts the command and returns a handle its output is read from" do
       {:ok, program} = Exec.open(["echo", "hello"])
@@ -26,6 +28,31 @@ defmodule ExecTest do
     test "returns the executable's name when the executable is missing from PATH" do
       assert {:error, {:executable_not_found, "executable-outside-path"}} =
                Exec.open(["executable-outside-path"])
+    end
+  end
+
+  describe "a program whose owner exits" do
+    test "ends with its owner and logs nothing" do
+      test_pid = self()
+
+      log =
+        capture_log(fn ->
+          spawn(fn ->
+            {:ok, program} = Exec.open(["sh", "-c", "echo started; exec sleep 30"])
+            {:ok, %{stdout: "started\n"}} = Exec.read(program)
+            {:ok, info} = Exec.info(program)
+            send(test_pid, {:info, info})
+          end)
+
+          assert_receive {:info, %{handle_pid: handle_pid, os_pid: os_pid}}
+
+          handle_ref = Process.monitor(handle_pid)
+          assert_receive {:DOWN, ^handle_ref, :process, ^handle_pid, :normal}
+
+          assert false === Exec.os_process_alive?(os_pid)
+        end)
+
+      assert "" === log
     end
   end
 
@@ -61,6 +88,9 @@ defmodule ExecTest do
     end
   end
 
+  # `sh -c "echo started; exec sleep 30"` prints "started" after its own
+  # execve, so reading it first means the program runs with its own signal
+  # handling and every signal sent afterwards reaches it as sent.
   describe "stop/1" do
     test "ends the program, which erlexec reports as a graceful termination" do
       {:ok, program} = Exec.open(["sh", "-c", "echo started; exec sleep 30"])
