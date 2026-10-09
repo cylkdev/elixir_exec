@@ -4,7 +4,7 @@ defmodule Exec.ProgramSupervisor do
   # Every running program hangs off here, one child per program. Children are
   # `:temporary` -- a program that ends has ended, and restarting it would run
   # the command a second time -- so this supervisor exists to own them and take
-  # them down with the VM, not to bring them back.
+  # them down with the VM; a program that ends stays ended.
 
   use DynamicSupervisor
 

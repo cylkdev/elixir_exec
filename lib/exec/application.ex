@@ -1,9 +1,9 @@
 defmodule Exec.Application do
   @moduledoc false
 
-  # Owns the supervisor that running programs are started under. It does not
-  # start, configure or wrap `:erlexec` -- that is an ordinary dependency which
-  # supervises itself.
+  # Owns the supervisor that running programs are started under. `:erlexec` is
+  # an ordinary dependency that starts, configures and supervises itself, and
+  # this module leaves it exactly as it is.
 
   use Application
 

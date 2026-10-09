@@ -2,7 +2,7 @@
 
 An idiomatic Elixir wrapper for [`erlexec`](https://hex.pm/packages/erlexec) — run and control operating system processes from Elixir.
 
-`:erlexec` does the work of starting programs and reaping them; `elixir_exec` puts an Elixir-shaped surface on it. The public module is `Exec`: a command is a binary or a list of binaries, output arrives as `{:stdout, data}` and `{:stderr, data}` events read on demand rather than as unsolicited mailbox messages, and a program never outlives the process that started it.
+`:erlexec` does the work of starting programs and reaping them; `elixir_exec` puts an Elixir-shaped surface on it. The public module is `Exec`: a command is a binary or a list of binaries, output arrives in the owner's mailbox as `{program, event}` messages that `Exec.read/2` receives, and a program lives at most as long as the process that started it.
 
 ## Installation
 
@@ -16,13 +16,13 @@ def deps do
 end
 ```
 
-`:erlexec` is an ordinary dependency. It starts itself and supervises its own `exec` process, so a Mix project needs no further setup.
+`:erlexec` is an ordinary dependency. It starts itself and supervises its own `exec` process, so adding the dependency is all the setup a Mix project needs.
 
 **Requirements:** Elixir `~> 1.18`. `:erlexec` compiles a small port binary, `exec-port`, during `mix deps.compile`, so the machine performing that compile needs a C and C++ toolchain — `cc`, `c++` and `make`.
 
-**The `SHELL` environment variable must be set to a non-empty value** in the environment of the Erlang VM, or `:erlexec` does not start at all. `exec-port` reads `SHELL` on startup and exits with status 4 when the variable is missing or empty (`deps/erlexec/c_src/exec.cpp:626`). The resulting crash report names neither `elixir_exec` nor the calling application, so the cause is not obvious from the failure. systemd units, container images and cron jobs are the environments where this bites: none of the three sets `SHELL` for the processes it starts. A systemd unit needs `Environment=SHELL=/bin/sh`, a Dockerfile needs `ENV SHELL=/bin/sh`, and a crontab needs a `SHELL=/bin/sh` line.
+**The `SHELL` environment variable must be set to a value of one or more characters** in the environment of the Erlang VM for `:erlexec` to start at all. `exec-port` reads `SHELL` on startup and exits with status 4 when the variable is missing or empty (`deps/erlexec/c_src/exec.cpp:626`). The resulting crash report leaves out both `elixir_exec` and the calling application, so the cause is hard to see from the failure. systemd units, container images and cron jobs are the environments where this bites: all three leave `SHELL` out of the environment they give the processes they start. A systemd unit needs `Environment=SHELL=/bin/sh`, a Dockerfile needs `ENV SHELL=/bin/sh`, and a crontab needs a `SHELL=/bin/sh` line.
 
-This requirement is **not** about which shell interprets a binary command. `elixir_exec` names `/bin/sh` itself when it builds the command, and never consults `SHELL` to decide anything. Setting `SHELL` to `bash`, `zsh` or `fish` does not change how any command behaves; it only satisfies the check that `exec-port` performs before it will run.
+This requirement is **separate** from the choice of which shell interprets a binary command. `elixir_exec` names `/bin/sh` itself when it builds the command, and ignores `SHELL` in every decision it makes. Setting `SHELL` to `bash`, `zsh` or `fish` leaves every command behaving exactly as before; its one effect is to satisfy the check that `exec-port` performs before it will run.
 
 ## Quick start
 
@@ -34,14 +34,14 @@ This requirement is **not** about which shell interprets a binary command. `elix
 
 ```elixir
 iex> Exec.run("echo hi")
-{:ok, %Exec.Result{stdout: "hi\n", stderr: "", exit_status: 0}}
+{:ok, %Exec.Result{stdout: "hi\n", stderr: "", exit: %{exit_reason: 0, exit_code: 0, signal: nil, exit_status: nil, core_dump: false}}}
 ```
 
-A non-zero exit is an outcome, not an error — `grep` finding no match exits `1` — so a command that ran and failed still returns `{:ok, %Exec.Result{}}`, with the code in the `:exit_status` field:
+A non-zero exit is an outcome, reported in the result like any other — `grep` finding zero matches exits `1` — so a command that ran and failed still returns `{:ok, %Exec.Result{}}`, with the code in its `exit.exit_code`:
 
 ```elixir
 iex> {:ok, result} = Exec.run("exit 3")
-iex> result.exit_status
+iex> result.exit.exit_code
 3
 ```
 
@@ -58,10 +58,10 @@ iex> Exec.run("sleep 30", timeout: 200)
 
 ```elixir
 iex> ~S(printf 'a\nb\n') |> Exec.stream() |> Enum.to_list()
-[:start, {:ok, {:stdout, "a\n"}}, {:ok, {:stdout, "b\n"}}, {:ok, {:exit, 0}}, :end]
+[:start, {:ok, {:stdout, "a\n"}}, {:ok, {:stdout, "b\n"}}, {:ok, {:exit, %{exit_reason: 0, exit_code: 0, signal: nil, exit_status: nil, core_dump: false}}}, :end]
 ```
 
-Every enumeration is framed: `:start` first, `:end` last, the program's output as `{:ok, event}` in between, and any failure as `{:error, reason}`. A consumer can therefore tell a command that ended from one that never started, and a stream that ran out from one that was cut short, without inspecting the program itself:
+Every enumeration is framed: `:start` first, `:end` last, the program's output as `{:ok, event}` in between, and any failure as `{:error, reason}`. A consumer can therefore tell a command that ended from one that failed to start, and a stream that ran out from one that was cut short, using the frames alone:
 
 ```elixir
 Exec.stream("mix test")
@@ -69,17 +69,17 @@ Exec.stream("mix test")
   :start -> Logger.info("started")
   {:ok, {:stdout, line}} -> Logger.info(line)
   {:ok, {:stderr, line}} -> Logger.warning(line)
-  {:ok, {:exit, status}} -> Logger.info("exited #{inspect(status)}")
+  {:ok, {:exit, exit}} -> Logger.info("exited #{inspect(exit)}")
   {:error, reason} -> Logger.error("failed: #{inspect(reason)}")
   :end -> Logger.info("done")
 end)
 ```
 
-Each line keeps its trailing newline, and a last line that has none is emitted as it stands, ahead of the frame that ends the stream. Standard output is in order and standard error is in order, but the two are not ordered relative to each other.
+Each line keeps its trailing newline, and a last line that lacks one is emitted as it stands, ahead of the frame that ends the stream. Standard output is in order and standard error is in order; that ordering holds within each stream only.
 
-Nothing runs until enumeration begins, so a stream that is built and never enumerated starts no program.
+The program starts when enumeration begins, so building a stream starts a program only once that stream is enumerated.
 
-A failure ends the stream: `{:error, reason}` is followed by `:end` and nothing else. It carries the same reasons `Exec.run/2` returns, including `:timeout` — `:timeout` bounds a whole enumeration, measured from when it begins, and defaults to five minutes here as it does for `Exec.run/2`. A stream meant to outlive that passes `:infinity`:
+A failure ends the stream: `{:error, reason}` is followed only by `:end`. It carries the same reasons `Exec.run/2` returns, including `:timeout` — `:timeout` bounds a whole enumeration, measured from when it begins, and defaults to `5_000` here as it does for `Exec.run/2`. A stream meant to outlive that passes `:infinity`:
 
 ```elixir
 "tail -f /var/log/system.log"
@@ -88,37 +88,37 @@ A failure ends the stream: `{:error, reason}` is followed by `:end` and nothing 
 |> Enum.take(5)
 ```
 
-Halting the enumeration early — through `Enum.take/2`, an `Enum.reduce_while/3` halt, or an exception raised by the consumer — stops the program, and the frames after the halt are not emitted. A consumer that halted knows it halted; the absent `:end` says so to anyone further down the pipeline.
+Halting the enumeration early — through `Enum.take/2`, an `Enum.reduce_while/3` halt, or an exception raised by the consumer — stops the program, and emission ends at the halt. A consumer that halted knows it halted; the stream ending before `:end` says so to anyone further down the pipeline.
 
 `Exec.run/2` is this stream consumed eagerly: it folds the frames into an `Exec.Result` rather than handing them to the caller one at a time. There is one reading loop underneath both, so anything true of one is true of the other.
 
 ### Start a command and control it
 
-`Exec.open/2` starts a command and returns a handle. The handle is the argument to `Exec.read/2`, `Exec.write/2`, `Exec.stop/1` and `Exec.signal/2`. Output is held until `Exec.read/2` asks for it, so no output reaches the mailbox of the calling process and none is lost between two reads:
+`Exec.open/2` starts a command and returns a handle. The handle is the argument to `Exec.read/2`, `Exec.write/2`, `Exec.stop/1` and `Exec.signal/2`. Output arrives in the owner's mailbox as `{program, event}` messages, in order, and `Exec.read/2` receives them there:
 
 ```elixir
 {:ok, program} = Exec.open("cat")
 
 Exec.write(program, "hello\n")
-{:ok, {:stdout, "hello\n"}} = Exec.read(program)
+{:ok, %{stdout: "hello\n"}} = Exec.read(program)
 
 Exec.write(program, :eof)
-{:ok, {:exit, 0}} = Exec.read(program)
+{:ok, %{exit_reason: 0, exit_code: 0, signal: nil, exit_status: nil, core_dump: false}} = Exec.read(program)
 ```
 
-`Exec.read/2` blocks until an event arrives or until its timeout, given in milliseconds, expires. That timeout defaults to `:infinity`, and a read that expires leaves the program running:
+`Exec.read/2` blocks until an event arrives or until its timeout, given in milliseconds, expires. That timeout defaults to `5_000`, and a read that expires leaves the program running:
 
 ```elixir
 {:error, :timeout} = Exec.read(program, 0)
 ```
 
-`{:ok, {:exit, status}}` is the last event a program produces. The handle is spent once that event has been read, and reading from a spent handle exits the calling process.
+`{:ok, exit}`, a map of how the program ended, is the last event a program produces. Everything a program reports comes before it.
 
-`Exec.stop/1` sends `SIGTERM` and escalates to `SIGKILL` after roughly five seconds, so a program that ignores `SIGTERM` can take that long to end; the `:kill_timeout` option changes that delay. `Exec.signal/2` escalates nothing — the signal sent is the signal asked for and never a different one — so `Exec.signal(program, :sigkill)` ends a program immediately. It is not always sent exactly once: `SIGHUP`, `SIGINT`, `SIGPIPE` and `SIGTERM` are sent again while the program is still running inside the first 250 milliseconds of its life, for the reason given under [Signals sent immediately after starting](#signals-sent-immediately-after-starting):
+`Exec.stop/1` sends `SIGTERM` and escalates to `SIGKILL` after roughly five seconds, so a program that ignores `SIGTERM` can take that long to end; the `:kill_timeout` option changes that delay. `Exec.signal/2` keeps to one signal — the signal sent is always the signal asked for — so `Exec.signal(program, :sigkill)` ends a program immediately. It may be sent more than once: `SIGHUP`, `SIGINT`, `SIGPIPE` and `SIGTERM` are sent again while the program is still running inside the first 250 milliseconds of its life, for the reason given under [Signals sent immediately after starting](#signals-sent-immediately-after-starting):
 
 ```elixir
 {:ok, program} = Exec.open("tail -f /var/log/system.log")
-{:ok, {:stdout, _line}} = Exec.read(program)
+{:ok, %{stdout: _line}} = Exec.read(program)
 Exec.stop(program)
 ```
 
@@ -128,26 +128,26 @@ A command is either a binary or a list of binaries, and the two are run in diffe
 
 ```elixir
 Exec.run("ls -l | wc -l")   # run as /bin/sh -c "ls -l | wc -l"
-Exec.run(["ls", "-l"])      # passed to execve, with no shell involved
+Exec.run(["ls", "-l"])      # passed to execve as written
 ```
 
 A binary command is handed to `/bin/sh -c`, which is what performs `PATH` lookup, glob expansion, variable substitution, pipes and redirection. `/bin/sh` is named by this library rather than read from the `SHELL` environment variable, so a binary command is interpreted by the same shell on every machine.
 
-A list command is passed to `execve` directly. No shell reads it, so no character in it is special: a pipe symbol, a dollar sign or a space inside an element is an ordinary character of an argument. A bare executable name in list form, one containing no `/`, is resolved against `PATH` before the call, so `["echo", "hi"]` finds the same program that `"echo hi"` does. A name containing `/` is used exactly as written, and a bare name that resolves to nothing is passed through unchanged so that the operating system reports the real failure.
+A list command is passed to `execve` directly. The shell stays out of it entirely, so every character in it is literal: a pipe symbol, a dollar sign or a space inside an element is an ordinary character of an argument. A bare executable name in list form, one free of any `/`, is resolved against `PATH` before the call, so `["echo", "hi"]` finds the same program that `"echo hi"` does. A name containing `/` is used exactly as written, and a bare name that fails to resolve returns `{:error, {:executable_not_found, name}}`.
 
-> ⚠ A binary command is interpreted by a shell, so a binary command must never be built from untrusted input. `Exec.run("cat #{user_input}")` runs whatever `user_input` says, including `"x; rm -rf /"`. Use the list form whenever any part of a command comes from outside the application.
+> ⚠ A binary command is interpreted by a shell, so a binary command must be built only from trusted input. `Exec.run("cat #{user_input}")` runs whatever `user_input` says, including `"x; rm -rf /"`. Use the list form whenever any part of a command comes from outside the application.
 
 ### Failure to launch
 
-A missing executable, a permission failure and a `:cd` directory that does not exist are reported as a non-zero exit status carrying a diagnostic on standard error, in the same shape as any other failed command. None of the three is reported as `{:error, reason}`:
+A missing executable given as a path, a permission failure and a missing `:cd` directory are reported as a non-zero exit code carrying a diagnostic on standard error, in the same shape as any other failed command. All three arrive as `{:ok, result}`:
 
 ```elixir
 {:ok, result} = Exec.run(["/nonexistent/nope"])
-result.exit_status  #=> 1
+result.exit.exit_code  #=> 1
 result.stderr       #=> a diagnostic naming the missing file
 ```
 
-`{:error, reason}` from `Exec.run/2` or `Exec.open/2` means the command was never handed to the operating system at all — an empty command, or a set of options the underlying runner refused.
+`{:error, reason}` from `Exec.run/2` or `Exec.open/2` means the command stopped short of the operating system — an empty command, a list command whose executable name is missing from PATH (`{:error, {:executable_not_found, name}}`), or a set of options the underlying runner refused.
 
 ## Options
 
@@ -155,74 +155,74 @@ Options are a keyword list, given as the second argument to `Exec.run/2`, `Exec.
 
 Read by `Exec` itself:
 
-* `:timeout` — milliseconds bounding a whole `Exec.run/2` call or a whole `Exec.stream/2` enumeration, measured from when it begins. Defaults to five minutes; pass `:infinity` for no bound. `Exec.open/2` accepts the key and ignores it, handing back a handle rather than reading anything; `Exec.read/2` takes its own timeout per call.
-* `:stream` — a one-argument function `Exec.run/2` calls with each `{:stdout, chunk}` and `{:stderr, chunk}` as it arrives, so a long command is visible while it runs. Chunks, not lines. Ignored by `Exec.stream/2` and `Exec.open/2`, which hand the caller their output already.
+* `:timeout` — milliseconds bounding a whole `Exec.run/2` call or a whole `Exec.stream/2` enumeration, measured from when it begins. Defaults to `5_000`; pass `:infinity` to let it run for as long as it takes. `Exec.open/2` accepts the key and ignores it, handing back a handle and leaving all reading to `Exec.read/2`; `Exec.read/2` takes its own timeout per call.
+* `:stream` — a one-argument function `Exec.run/2` calls with each `{:stdout, chunk}` and `{:stderr, chunk}` as it arrives, so a long command is visible while it runs. Each call gets a raw chunk, whose boundaries are independent of line breaks. Ignored by `Exec.stream/2` and `Exec.open/2`, which hand the caller their output already.
 * `:owner` — the process whose death stops the program. Defaults to the process that called `Exec.run/2`, `Exec.stream/2` or `Exec.open/2`.
-* `:stdin`, `:stdout`, `:stderr` — whether to connect that one stream to the program. Each defaults to `true`. A program started with `stdout: false` produces no `{:stdout, _}` events at all, and one started with `stdin: false` accepts a write and discards it.
+* `:stdin`, `:stdout`, `:stderr` — whether to connect that one stream to the program. Each defaults to `true`. A program started with `stdout: false` produces zero `%{stdout: _}` events, and one started with `stdin: false` accepts a write and discards it.
 
 Forwarded to `:erlexec` unchanged: `:executable`, `:cd`, `:env`, `:kill`, `:kill_timeout`, `:user`, `:nice`, `:success_exit_code`, `:winsz`, `:pty`, `:capabilities` and `:debug`. [erlexec's documentation](https://hexdocs.pm/erlexec/exec.html) describes what each of those means.
 
-`:group` is not accepted. `Exec` sets it, so that `Exec.stop/1` and `Exec.signal/2` reach a program's whole process group.
+`:group` is rejected. `Exec` sets it, so that `Exec.stop/1` and `Exec.signal/2` reach a program's whole process group.
 
-**Any option the runner rejects raises `ArgumentError`**, which includes a key it does not know. A silently dropped option would be an invisible bug — the command runs, ignoring the `cd:` that was meant to place it — so an unrecognised key is refused rather than forwarded.
+**Any option the runner rejects raises `ArgumentError`**, which includes any key outside the set it knows. A silently dropped option would be a hidden bug — the command runs, ignoring the `cd:` that was meant to place it — so such a key is refused rather than forwarded.
 
 ## Lifetime
 
-A program never outlives the process that started it. If that process dies, including under `Process.exit(pid, :kill)`, which leaves no code of its own to run, the program is stopped. This holds for `Exec.run/2`, `Exec.stream/2` and `Exec.open/2` alike:
+A program lives at most as long as the process that started it. If that process dies, including under `Process.exit(pid, :kill)`, which stops the process before it runs another line of its own code, the program is stopped. This holds for `Exec.run/2`, `Exec.stream/2` and `Exec.open/2` alike:
 
 ```elixir
 spawn(fn -> {:ok, _program} = Exec.open("sleep 3600") end)
 # The spawned process exits immediately, and `sleep 3600` is stopped with it.
 ```
 
-The guarantee does not survive the Erlang VM itself going down.
+The guarantee ends when the Erlang VM itself goes down.
 
-The reverse does not hold. A program that fails, exits non-zero or is killed by a signal does not disturb the process that started it.
+The tie runs one way only. A program that fails, exits non-zero or is killed by a signal leaves the process that started it running as before.
 
-`owner: pid` ties a program's lifetime to a process other than the one that started it, which is how a program outlives a short-lived caller without being orphaned.
+`owner: pid` ties a program's lifetime to a process other than the one that started it, which is how a program outlives a short-lived caller while still tied to a living owner.
 
 ### Process groups and exit status
 
-Each program runs in a process group of its own, and `Exec.stop/1` and `Exec.signal/2` act on that whole group. A binary command therefore takes down `/bin/sh` and every program the shell started, rather than leaving the real work orphaned when the shell dies. `Exec.signal/2` reports the signal identically for a binary command and a list command:
+Each program runs in a process group of its own, and `Exec.stop/1` and `Exec.signal/2` act on that whole group. A binary command therefore takes down `/bin/sh` and every program the shell started, so the real work ends together with the shell. `Exec.signal/2` reports the signal identically for a binary command and a list command:
 
 ```elixir
-{:exit, {:signal, :sigterm}}
+%{exit_reason: 15, exit_code: nil, signal: 15, exit_status: :sigterm, core_dump: false}
 ```
 
-`Exec.stop/1` is an ordered termination rather than a raw signal, so a program stopped that way reports exit status `0`, whichever form the command took:
+`Exec.stop/1` sends `SIGTERM` and escalates to `SIGKILL`, and `:erlexec` reports a program it stopped as a graceful termination:
 
 ```elixir
-{:exit, 0}
+%{exit_reason: 0, exit_code: 0, signal: nil, exit_status: nil, core_dump: false}
 ```
 
-A signal that arrives from outside the group behaves differently. It reaches the one program it names and no other, so an operator who runs `kill -TERM` against the inner program of `Exec.open("sleep 30")` leaves `/bin/sh` alive to reap that program, write a diagnostic of its own on standard error, and exit `128 + signal`:
+A signal that arrives from outside the group behaves differently. It reaches only the one program it names, so an operator who runs `kill -TERM` against the inner program of `Exec.open("sleep 30")` leaves `/bin/sh` alive to reap that program, write a diagnostic of its own on standard error, and exit `128 + signal`:
 
 ```elixir
-{:stderr, "Terminated\n"}
-{:exit, 143}
+%{stderr: "Terminated\n"}
+%{exit_reason: 36608, exit_code: 143, signal: nil, exit_status: nil, core_dump: false}
 ```
 
-That `"Terminated\n"` is written by `/bin/sh`, not by `sleep`. A list command has no shell in it to write such a line: an outside signal reaches the one program that is there, so a list command reports that signal in the same `{:exit, {:signal, :sigterm}}` form whether the signal came from `Exec.signal/2` or from outside the group.
+That `"Terminated\n"` is written by `/bin/sh`; `sleep` itself dies silently. A list command runs the program alone, so that line stays out of its output: an outside signal reaches the one program that is there, so a list command reports that signal in the same `exit_status: :sigterm` form whether the signal came from `Exec.signal/2` or from outside the group.
 
-Because `Exec.signal/2` signals the whole group, a program that traps a signal is not protected from `Exec.signal/2` when its command was given as a binary. The `/bin/sh -c` wrapper is in the same group and traps nothing, so the wrapper dies of the signal and the wrapper's death is the exit `Exec.read/2` reports, even while the program the shell wrapped is still running and still ignoring the signal. Against a script whose first line is `trap '' TERM`, `Exec.signal(program, :sigterm)` produces `{:exit, {:signal, :sigterm}}` for `Exec.open("/path/to/script")` and `{:error, :timeout}` for `Exec.open(["/path/to/script"])`, the latter because the trap holds and the program is still there. The list form is what signals a program that handles signals itself.
+Because `Exec.signal/2` signals the whole group, a program that traps a signal is still exposed to `Exec.signal/2` when its command was given as a binary. The `/bin/sh -c` wrapper is in the same group and keeps its default signal handling, so the wrapper dies of the signal and the wrapper's death is the exit `Exec.read/2` reports, even while the program the shell wrapped is still running and still ignoring the signal. Against a script whose first line is `trap '' TERM`, `Exec.signal(program, :sigterm)` produces `exit_status: :sigterm` for `Exec.open("/path/to/script")` and `{:error, :timeout}` for `Exec.open(["/path/to/script"])`, the latter because the trap holds and the program is still there. The list form is what signals a program that handles signals itself.
 
-`Exec.write/2`, `Exec.stop/1` and `Exec.signal/2` each return `{:error, :not_running}` when the program has already ended. Output the program produced before it ended is still readable with `Exec.read/2`; the handle is spent only once the `{:exit, status}` event has been read.
+`Exec.write/2`, `Exec.stop/1` and `Exec.signal/2` each return `{:error, :not_running}` when the program has already ended. Output the program produced before it ended is still in the owner's mailbox for `Exec.read/2`.
 
-`Exec.signal/2` accepts a signal name such as `:sigterm`, `:sigkill` or `:sigusr1`, or the integer number. Names are resolved for the operating system the VM is running on, because the two systems disagree about some of the numbers: `:sigusr1` is 10 on Linux and 30 on Darwin. The same table names the signal reported in `{:exit, {:signal, name}}`, so a signal sent by name comes back under that name. The names known are `:sighup`, `:sigint`, `:sigquit`, `:sigill`, `:sigtrap`, `:sigabrt`, `:sigfpe`, `:sigkill`, `:sigsegv`, `:sigpipe`, `:sigalrm`, `:sigterm`, `:sigttin`, `:sigttou`, `:sigxcpu`, `:sigxfsz`, `:sigvtalrm`, `:sigprof`, `:sigwinch`, `:sigusr1`, `:sigusr2`, `:sigchld`, `:sigcont`, `:sigstop` and `:sigtstp`. A name that is not a known signal raises `ArgumentError` in the calling process: there is no number to send, and guessing one would signal something. An integer is sent as it stands, and one the operating system has no signal for comes back as `{:error, :einval}`. Signal `0` is accepted: it sends nothing and asks whether the program exists.
+`Exec.signal/2` accepts a signal name such as `:sigterm`, `:sigkill` or `:sigusr1`, or the integer number. Names are resolved for the operating system the VM is running on, because the two systems disagree about some of the numbers: `:sigusr1` is 10 on Linux and 30 on Darwin. The same table names the signal reported in the exit's `:exit_status`, so a signal sent by name comes back under that name. The names known are `:sighup`, `:sigint`, `:sigquit`, `:sigill`, `:sigtrap`, `:sigabrt`, `:sigfpe`, `:sigkill`, `:sigsegv`, `:sigpipe`, `:sigalrm`, `:sigterm`, `:sigttin`, `:sigttou`, `:sigxcpu`, `:sigxfsz`, `:sigvtalrm`, `:sigprof`, `:sigwinch`, `:sigusr1`, `:sigusr2`, `:sigchld`, `:sigcont`, `:sigstop` and `:sigtstp`. A name outside that list raises `ArgumentError` in the calling process: any number sent would be a guess, and a guess would signal something. An integer is sent as it stands, and one outside the operating system's set of signals comes back as `{:error, :einval}`. Signal `0` is accepted: it performs only the check of whether the program exists.
 
 ### Signals sent immediately after starting
 
-`SIGHUP`, `SIGINT`, `SIGPIPE` and `SIGTERM` can be lost when they are sent in the moment between a program being created and its beginning to run. `:erlexec`'s port program, `exec-port`, installs handlers for those four signals for itself, and a newly created program inherits those handlers until it replaces itself with the command being run. A signal arriving in that gap is absorbed by an inherited handler instead of reaching the program that was asked for.
+`SIGHUP`, `SIGINT`, `SIGPIPE` and `SIGTERM` can be lost when they are sent in the moment between a program being created and its beginning to run. `:erlexec`'s port program, `exec-port`, installs handlers for those four signals for itself, and a newly created program inherits those handlers until it replaces itself with the command being run. A signal arriving in that gap is absorbed by an inherited handler, and the program that was asked for misses it.
 
-`Exec` sends such a signal again, every 50 milliseconds, for as long as the program is still running and no more than 250 milliseconds have passed since it started — at most six further sends, the last of them no later than 300 milliseconds after the program started. The consequence for a program that installs its own handler for one of those four signals inside that window is that the program may observe the signal more than once. That trade is deliberate: a duplicate is a nuisance the caller can reason about, and a lost signal is the caller's instruction silently not happening.
+`Exec` sends such a signal again, every 50 milliseconds, for as long as the program is still running and at most 250 milliseconds have passed since it started — at most six further sends, the last of them within 300 milliseconds of the program starting. The consequence for a program that installs its own handler for one of those four signals inside that window is that the program may observe the signal more than once. That trade is deliberate: a duplicate is a nuisance the caller can reason about, and a lost signal is the caller's instruction silently dropped.
 
-`Exec.stop/1` always ends the program, because it escalates to `SIGKILL`, which no handler can absorb. Its opening `SIGTERM` is one of the four, though, and can be swallowed in that same moment like any other. When that happens the program ends at the escalation rather than promptly — around five seconds after the `Exec.stop/1` call by default, or after whatever `:kill_timeout` was given. A program stopped a moment after `Exec.open/2` returns can therefore stall for that long before its `{:exit, 0}` arrives, where the same call a few tens of milliseconds later returns the exit almost at once.
+`Exec.stop/1` always ends the program, because it escalates to `SIGKILL`, which bypasses every handler. Its opening `SIGTERM` is one of the four, though, and can be swallowed in that same moment like any other. When that happens the program ends only at the escalation — around five seconds after the `Exec.stop/1` call by default, or after whatever `:kill_timeout` was given. A program stopped a moment after `Exec.open/2` returns can therefore stall for that long before its exit arrives, where the same call a few tens of milliseconds later returns the exit almost at once.
 
-Signals other than those four are not absorbed this way. The only other handler `exec-port` installs is for `SIGCHLD`, which a program ignores by default in any case, so nothing a caller can send through `Exec.signal/2` is swallowed except those four.
+Signals other than those four reach the program as sent. The only other handler `exec-port` installs is for `SIGCHLD`, which a program ignores by default in any case, so those four are the only signals sent through `Exec.signal/2` that can be swallowed.
 
 ## Configuration
 
-`elixir_exec` has no configuration of its own. `:erlexec` starts itself and reads its own start options, so it is configured directly. Every key below is optional:
+All configuration belongs to `:erlexec`. `:erlexec` starts itself and reads its own start options, so it is configured directly. Every key below is optional:
 
 ```elixir
 config :erlexec,
@@ -239,11 +239,11 @@ config :erlexec,
   portexe: "/opt/myapp/bin/exec-port"
 ```
 
-Configuration does not cover the `SHELL` environment variable described under Installation. `exec-port` reads `SHELL` from the operating system environment, which no `config :erlexec` key can supply.
+The `SHELL` environment variable described under Installation lies outside configuration. `exec-port` reads `SHELL` from the operating system environment, which sits beyond the reach of every `config :erlexec` key.
 
 ## Running child programs as a non-root user
 
-`:erlexec` refuses to start any program while running as root, unless it was configured with `root: true`. Rather than granting that, create a dedicated unprivileged operating system user and have child programs drop to it. The Mix task that creates that user runs on the deploy host, once, and is not part of the runtime:
+While running as root, `:erlexec` starts programs only when configured with `root: true`. Rather than granting that, create a dedicated unprivileged operating system user and have child programs drop to it. The Mix task that creates that user runs on the deploy host, once, and stays outside the runtime:
 
 ```sh
 mix exec.user.create                       # creates the "elixir_exec" system user
@@ -273,8 +273,8 @@ Choose an unused GID and create the group:
 groupadd --gid 10001 sandbox
 ````
 
-`groupadd --gid` assigns the specified GID, which must be unique unless non-unique
-IDs are explicitly enabled.
+`groupadd --gid` assigns the specified GID, which must be unique; duplicate
+IDs are allowed only when explicitly enabled.
 
 ### 2. Create the user
 
@@ -308,17 +308,17 @@ login shell:   /usr/sbin/nologin
 ```
 
 `--gid` sets the primary group. `--no-create-home` keeps the account locked down by
-not creating a home directory.
+skipping creation of a home directory.
 
-Do not set a password. When `useradd` is used without `--password`, the password is
+Skip setting a password. When `useradd` runs with `--password` omitted, the password is
 created in a locked state.
 
 `nologin` refuses login attempts that use the account's login shell.
 
 ### 3. Restrict the account
 
-Because the account is created without a home directory and with a non-login shell,
-there is no home directory to restrict. Only give `sandbox` write access to files and
+Because the account is created with home-directory creation skipped and with a `nologin` shell,
+restricting it comes down to the files it may write. Only give `sandbox` write access to files and
 directories that the application needs to modify.
 
 ### 4. Verify the account
@@ -329,10 +329,10 @@ Check the user and group membership:
 id sandbox
 ```
 
-The account should have `sandbox` as its primary group and no supplementary groups.
+The account should have `sandbox` as its primary group and as its only group.
 
 `useradd` normally assigns only the initial group, but `/etc/default/useradd` can configure
-supplementary groups. If `id` shows an unwanted group, remove it with:
+supplementary groups. If `id` shows an extra group, remove it with:
 
 ```bash
 gpasswd -d sandbox GROUP
@@ -360,14 +360,14 @@ passwd -S sandbox
 
 The second field should be `L`, meaning the password is locked.
 
-### 5. Do not give erlexec additional privileges
+### 5. Keep erlexec at the application user's privileges
 
-For this sandbox configuration, do not configure `exec-port` to run through `sudo`, install
-it setuid root, or grant it capabilities that allow it to change user identity or perform
+For this sandbox configuration, keep `exec-port` at the application user's own privileges: leave out
+`sudo`, the setuid-root install, and any capabilities that allow it to change user identity or perform
 privileged operations.
 
 Those erlexec configurations are specifically intended to let `exec-port` perform operations
-that the application's normal user could not perform.
+beyond the reach of the application's normal user.
 
 ### 6. Run the application as the sandbox user
 

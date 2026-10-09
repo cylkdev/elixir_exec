@@ -8,72 +8,64 @@ defmodule Exec.Program do
   # One process per running program.
   #
   # It calls :exec.run, so the program's output is delivered here -- a bare
-  # :stdout means "whoever made the call" (exec.erl:337). Output is held in a
-  # queue until read/2 asks for it, so nothing ever reaches the caller's
-  # mailbox.
+  # :stdout means "whoever made the call" (exec.erl:337). Each piece is
+  # forwarded to the owner as a `{program, event}` message, in the order erlexec
+  # delivered it, and Exec.read/2 receives them there.
   #
-  # It monitors the owner and stops the program if the owner dies. erlexec does
-  # not do this: under `link` it links whoever called :exec.run (exec.erl:1207),
-  # which is this process, not the owner.
+  # It monitors the owner and stops the program if the owner dies. That job
+  # falls to this process: under `link` erlexec links whoever called :exec.run
+  # (exec.erl:1207), which is this process rather than the owner.
   #
   # That link is the reason `link` is used here rather than `monitor`. erlexec
   # kills an OS process when its controller dies (exec.erl:1327), and the
   # controller dies with whatever it is linked to -- so linking it here means
   # the program is reaped however this process goes, including a brutal kill or
-  # the supervision tree going down, neither of which leaves us any code to run.
+  # the supervision tree going down, both of which end us before any further
+  # code of ours runs.
   # Under `monitor` the controller outlives us and the OS process is orphaned.
   #
   # The link is bidirectional, and a non-zero exit does exit the controller
   # abnormally (exec.erl:1230), so this process traps exits. The program's exit
-  # then arrives as a message like any other. None of this reaches the owner,
-  # which is held by a monitor and never a link.
+  # then arrives as a message like any other. All of this stays between this
+  # process and the controller; the owner is held by a monitor alone.
 
   use GenServer
 
   # The four signals exec-port installs a termination handler for
   # (exec.cpp:151-154), by number: SIGHUP, SIGINT, SIGPIPE, SIGTERM. Those four
   # numbers happen to be the same on Linux and Darwin, checked one at a time,
-  # and no rule guarantees that -- SIGUSR1 is below 16 too, and is 10 on Linux
-  # and 30 on Darwin.
+  # and that agreement was observed rather than guaranteed by any rule -- SIGUSR1
+  # is below 16 too, and is 10 on Linux and 30 on Darwin.
   @swallowable_signals [1, 2, 13, 15]
 
-  # Far longer than any observed fork-to-execve window, and short enough that no
-  # realistic program has begun meaningful work.
+  # Far longer than any observed fork-to-execve window, and short enough to end
+  # before any realistic program has begun meaningful work.
   @spawn_window_ms 250
 
   # Long enough for the execve to have completed in every observed case.
   @resend_after_ms 50
 
   # `owner` is whoever the program belongs to. It defaults to the calling
-  # process, so starting one directly needs nothing extra; going through the
-  # supervisor does, because start_link then runs in the supervisor.
+  # process, so starting one directly works with the default; going through the
+  # supervisor needs it set, because start_link then runs in the supervisor.
   def start_link(command, owner, opts \\ []) do
     GenServer.start_link(__MODULE__, {command, owner, opts})
   end
-
-  # :infinity on the call itself: the timeout is the worker's to enforce, so a
-  # slow program never exits the caller and never leaves a late reply behind.
-  def read(conn, timeout, opts \\ []),
-    do: GenServer.call(conn, {:read, timeout}, opts[:timeout] || :infinity)
 
   def write(conn, data, opts \\ []), do: call(conn, {:write, data}, opts)
 
   def stop(conn, opts \\ []), do: call(conn, :stop, opts)
 
-  # stop/1 ends the OS program and leaves this process alive, because the caller
-  # still has the remaining events -- including the exit -- to read. shutdown/1
-  # is for a caller that is done reading: run/2 after its timeout, a halted
-  # stream/2. Without it the exit arrives with no reader, gets queued, and this
-  # process sits holding a monitor and a queue nobody will ever read until the
-  # owner dies -- unbounded accumulation under a long-lived owner.
+  # shutdown/1 is for a caller that is done with the program: run/2 after its
+  # timeout, a halted stream/2.
   #
   # Terminating is all it takes: the controller link reaps the OS program
-  # however this process goes (see the module comment above), so there is
-  # nothing to stop first.
+  # however this process goes (see the module comment above), so terminating is
+  # the first and only step.
   #
   # The process may already be gone -- it stops itself on the exit event, which
   # can land between the caller's decision and this call -- so a :noproc exit is
-  # the expected outcome, not an error.
+  # the expected outcome and counts as success.
   def shutdown(conn, opts \\ []) do
     GenServer.stop(conn, :normal, opts[:timeout] || 5_000)
   catch
@@ -84,26 +76,23 @@ defmodule Exec.Program do
 
   def info(conn, opts \\ []), do: call(conn, :info, opts)
 
-  # A handle is spent once its exit has been read: this process stops itself on
-  # that read, so a later call finds nothing there. GenServer.call exits the
-  # caller with :noproc, which says more about how this is built than about what
-  # happened. To a caller it means the same as a program that has ended.
-  #
-  # read/2 deliberately does not go through here. Its exit is how a read loop
-  # terminates, and returning a value instead would make a naive loop spin.
+  # This process stops itself when the program exits, so a later call finds it
+  # gone. GenServer.call exits the caller with :noproc, which says more about
+  # how this is built than about what happened. To a caller it means the same as
+  # a program that has ended.
   defp call(conn, message, opts) do
     GenServer.call(conn, message, opts[:timeout] || 5_000)
   catch
     :exit, {reason, _} when reason in [:noproc, :normal] -> {:error, :not_running}
   end
 
-  # The owner monitor is never demonitored: this process stops on that DOWN,
-  # and monitors are released when the process holding them dies.
+  # The owner monitor stays for this process's whole life: this process stops
+  # on that DOWN, and monitors are released when the process holding them dies.
   #
   # Trapping exits is what makes the controller's link (see above) survivable:
   # the program's exit arrives as {:EXIT, controller, reason} instead of killing
-  # us. It is set before :exec.run so a program that exits immediately cannot
-  # land in the window before it.
+  # us. It is set before :exec.run so even a program that exits immediately
+  # lands after it.
   @impl GenServer
   def init({command, owner, opts}) do
     Process.flag(:trap_exit, true)
@@ -114,10 +103,8 @@ defmodule Exec.Program do
          %{
            controller_pid: controller_pid,
            os_pid: os_pid,
+           owner: owner,
            owner_ref: Process.monitor(owner),
-           events: :queue.new(),
-           reader: nil,
-           exited?: false,
            started_at: System.monotonic_time(:millisecond)
          }}
 
@@ -127,40 +114,6 @@ defmodule Exec.Program do
   end
 
   @impl GenServer
-  # The exit is the last thing there is to read, so the process ends with it.
-  def handle_call({:read, timeout}, from, state) do
-    case :queue.out(state.events) do
-      {{:value, {:exit, _} = event}, events} ->
-        {:stop, :normal, {:ok, event}, %{state | events: events}}
-
-      {{:value, event}, events} ->
-        {:reply, {:ok, event}, %{state | events: events}}
-
-      {:empty, _events} ->
-        {:noreply, %{state | reader: {from, start_read_timer(timeout)}}}
-    end
-  end
-
-  # The program has ended, but this process is still alive because its exit has
-  # not been read yet. erlexec answers these three with charlist messages of its
-  # own ("pid not alive", "Cannot kill a pid not managed by this application"),
-  # and :exec.send/2 quietly accepts a write nobody will ever receive. One
-  # documented reason is more use than either.
-  def handle_call({:write, _data}, _from, %{exited?: true} = state) do
-    {:reply, {:error, :not_running}, state}
-  end
-
-  def handle_call(:stop, _from, %{exited?: true} = state) do
-    {:reply, {:error, :not_running}, state}
-  end
-
-  def handle_call({:kill, _signal}, _from, %{exited?: true} = state) do
-    {:reply, {:error, :not_running}, state}
-  end
-
-  # Answered whether or not the program has exited: a caller that recorded the
-  # pid somewhere durable -- a pid file outliving this VM -- still wants it back
-  # after the program ends, and unlike write/stop/kill, reading it does nothing.
   def handle_call(:info, _from, state) do
     info = %{handle_pid: self(), controller_pid: state.controller_pid, os_pid: state.os_pid}
 
@@ -184,34 +137,35 @@ defmodule Exec.Program do
 
   @impl GenServer
   def handle_info({stream, _os_pid, data}, state) when stream in [:stdout, :stderr] do
-    deliver_or_queue(state, {stream, data})
+    send(state.owner, {self(), %{stream => data}})
+    {:noreply, state}
   end
 
   def handle_info({:DOWN, ref, :process, _pid, _reason}, %{owner_ref: ref} = state) do
-    # The owner is gone, so this process goes too, and the controller's link
-    # takes the program with it (see above). We do not stop the program here:
-    # that would be a second stop racing erlexec's own link teardown, and when
-    # the program has already exited the teardown's stop lands on a dead os_pid
-    # with no caller to answer -- which erlexec logs as an unknown message.
-    {:stop, :normal, state}
+    # The owner is gone, so the program goes too. This process stops it with a
+    # stop erlexec answers, and ends when the program's exit arrives below.
+    # erlexec's own link teardown stops the program fire-and-forget
+    # (exec.erl:1338); a program that exits just as its owner dies turns that
+    # stop into an "unknown msg" warning. Stopping here first means the exit is
+    # handled before the controller ends, so the teardown finds the program
+    # already gone.
+    Core.stop(state.os_pid)
+    {:noreply, state}
   end
 
   # The controller is the only process this one is linked to, and gen_server
   # handles its parent's exit itself, so any EXIT reaching here is the program
-  # ending. Its reason carries the exit status (exec.erl:1224-1231).
+  # ending. Its reason carries the exit status (exec.erl:1224-1231). The exit is
+  # the last thing the program produces, so this process ends with it.
   def handle_info({:EXIT, _controller, reason}, state) do
-    deliver_or_queue(%{state | exited?: true}, {:exit, Exec.decode_exit_reason(reason)})
-  end
-
-  def handle_info({:read_timeout, token}, %{reader: {from, {_timer, token}}} = state) do
-    GenServer.reply(from, {:error, :timeout})
-    {:noreply, %{state | reader: nil}}
+    send(state.owner, {self(), %{exit_reason: exit_reason(reason)}})
+    {:stop, :normal, state}
   end
 
   # The program is still running 50ms after a signal that exec-port's inherited
   # handler may have swallowed. Send it again, and keep doing so until it exits
   # or the spawn window closes.
-  def handle_info({:resend, signal}, %{exited?: false} = state) do
+  def handle_info({:resend, signal}, state) do
     case Core.kill(state.os_pid, signal) do
       :ok ->
         :ok
@@ -225,69 +179,29 @@ defmodule Exec.Program do
     {:noreply, schedule_resend(state, signal)}
   end
 
-  # It exited in the meantime, so the first signal landed.
-  def handle_info({:resend, _signal}, state), do: {:noreply, state}
+  # erlexec reports a program that "exited with status 0" as `normal`, and every
+  # other exit as `{exit_status, Status}`.
+  defp exit_reason(:normal), do: 0
+  defp exit_reason({:exit_status, status}), do: status
 
-  # A timeout whose token is not the current reader's: the timer fired just as
-  # the event it was bounding arrived, or a second read/2 replaced the reader
-  # and orphaned the first one's timer. The read it belonged to is over, so the
-  # message is spent -- answering it would time out a read that is still
-  # waiting, and crashing here would kill the running program and lose every
-  # queued event.
-  def handle_info({:read_timeout, _token}, state), do: {:noreply, state}
-
-  # Hands an event to a waiting reader, or queues it until one asks.
-  defp deliver_or_queue(%{reader: nil} = state, event) do
-    {:noreply, %{state | events: :queue.in(event, state.events)}}
-  end
-
-  defp deliver_or_queue(%{reader: {from, timer}} = state, {:exit, _} = event) do
-    cancel_read_timer(timer)
-    GenServer.reply(from, {:ok, event})
-    {:stop, :normal, %{state | reader: nil}}
-  end
-
-  defp deliver_or_queue(%{reader: {from, timer}} = state, event) do
-    cancel_read_timer(timer)
-    GenServer.reply(from, {:ok, event})
-    {:noreply, %{state | reader: nil}}
-  end
-
-  # The token is what makes a timeout message identifiable. Cancelling does not
-  # unsend, so a timer that fired just before its event arrived leaves a message
-  # behind; carrying the token means the handler can tell that one from the
-  # timeout of whatever read came next, instead of having to sweep the mailbox.
-  defp start_read_timer(:infinity), do: nil
-
-  defp start_read_timer(timeout) do
-    token = make_ref()
-    {Process.send_after(self(), {:read_timeout, token}, timeout), token}
-  end
-
-  defp cancel_read_timer(nil), do: :ok
-
-  defp cancel_read_timer({timer, _token}) do
-    Process.cancel_timer(timer)
-    :ok
-  end
-
-  # A signal swallowed in the fork-to-execve window never reached the program, so
-  # sending it again is the difference between the caller's instruction being
-  # carried out and being silently dropped.
+  # A signal swallowed in the fork-to-execve window is lost before it reaches
+  # the program, so sending it again is the difference between the caller's
+  # instruction being carried out and being silently dropped.
   #
-  # Retried rather than tried once: a single retry after 50ms is not a bound. On
-  # a loaded machine the window can outlast it, and then the original and the
-  # retry are both swallowed and the signal is lost anyway. What bounds this is
+  # Retried rather than tried once: a single retry after 50ms falls short of a
+  # bound. On a loaded machine the window can outlast it, and then the original
+  # and the retry are both swallowed and the signal is lost anyway. What bounds
+  # this is
   # @spawn_window_ms: sends stop once the program is that old, or once it has
   # exited. At 50ms apart within a 250ms window that is at most six further
-  # sends, the last no later than 300ms after the program started.
+  # sends, the last at most 300ms after the program started.
   #
-  # This cannot tell a swallowed signal from one the program deliberately
-  # ignored, so a program that installs its own handler for one of these four
+  # This treats a swallowed signal and one the program deliberately ignored
+  # alike, so a program that installs its own handler for one of these four
   # inside the window may see it several times rather than twice. That is
   # accepted, weighed against a signal being lost outright roughly one time in
   # eleven: a duplicate is a nuisance the caller can see and reason about, while
-  # a loss is the instruction silently not happening.
+  # a loss is the instruction silently vanishing.
   #
   # Delete this once erlexec resets the child's signal dispositions before
   # execve; the reproduction and the proposed fix are in ../erlexec_signal_loss.

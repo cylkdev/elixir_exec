@@ -1,17 +1,93 @@
 defmodule ExecTest do
   use ExUnit.Case
 
-  describe "info/1" do
-    test "returns the handle, erlexec's controller and the operating-system pid" do
+  describe "open/2" do
+    test "starts the command and returns a handle its output is read from" do
+      {:ok, program} = Exec.open(["echo", "hello"])
+
+      assert {:ok, %{stdout: "hello\n"}} = Exec.read(program)
+    end
+
+    test "returns the executable's name when the executable is missing from PATH" do
+      assert {:error, {:executable_not_found, "executable-outside-path"}} =
+               Exec.open(["executable-outside-path"])
+    end
+  end
+
+  describe "read/2" do
+    test "returns each event in order, ending with the exit" do
+      {:ok, program} = Exec.open(["echo", "hello"])
+
+      assert {:ok, %{stdout: "hello\n"}} = Exec.read(program)
+
+      assert {:ok,
+              %{exit_reason: 0, exit_code: 0, signal: nil, exit_status: nil, core_dump: false}} =
+               Exec.read(program)
+    end
+
+    test "returns a timeout when the wait for an event runs out" do
       {:ok, program} = Exec.open(["sleep", "30"])
 
-      assert {:ok, %{handle_pid: ^program, controller_pid: controller_pid, os_pid: os_pid}} =
-               Exec.info(program)
+      assert {:error, :timeout} = Exec.read(program, 0)
+    end
+  end
 
-      assert ^os_pid = :exec.ospid(controller_pid)
-      assert ^controller_pid = :exec.pid(os_pid)
+  describe "write/2" do
+    test "sends data to the program's standard input" do
+      {:ok, program} = Exec.open(["cat"])
 
-      Exec.stop(program)
+      assert :ok = Exec.write(program, "hello\n")
+      assert {:ok, %{stdout: "hello\n"}} = Exec.read(program)
+      assert :ok = Exec.write(program, :eof)
+
+      assert {:ok,
+              %{exit_reason: 0, exit_code: 0, signal: nil, exit_status: nil, core_dump: false}} =
+               Exec.read(program)
+    end
+  end
+
+  describe "stop/1" do
+    test "ends the program, which erlexec reports as a graceful termination" do
+      {:ok, program} = Exec.open(["sh", "-c", "echo started; exec sleep 30"])
+      {:ok, %{stdout: "started\n"}} = Exec.read(program)
+
+      assert :ok = Exec.stop(program)
+
+      assert {:ok,
+              %{exit_reason: 0, exit_code: 0, signal: nil, exit_status: nil, core_dump: false}} =
+               Exec.read(program)
+    end
+  end
+
+  describe "signal/2" do
+    test "ends the program with the signal it was sent" do
+      {:ok, program} = Exec.open(["sh", "-c", "echo started; exec sleep 30"])
+      {:ok, %{stdout: "started\n"}} = Exec.read(program)
+
+      assert :ok = Exec.signal(program, :sigterm)
+
+      assert {:ok,
+              %{
+                exit_reason: 15,
+                exit_code: nil,
+                signal: 15,
+                exit_status: :sigterm,
+                core_dump: false
+              }} =
+               Exec.read(program)
+    end
+  end
+
+  describe "info/1" do
+    test "returns the handle, erlexec's controller and the operating-system pid of the running program" do
+      {:ok, program} = Exec.open(["sleep", "30"])
+
+      {:ok, %{handle_pid: handle_pid, controller_pid: controller_pid, os_pid: os_pid}} =
+        Exec.info(program)
+
+      assert program === handle_pid
+      assert true === Process.alive?(controller_pid)
+      assert true === Exec.os_process_alive?(os_pid)
     end
   end
 
@@ -20,35 +96,49 @@ defmodule ExecTest do
       {:ok, program} = Exec.open(["sleep", "30"])
       {:ok, %{os_pid: os_pid}} = Exec.info(program)
 
-      assert Exec.os_process_alive?(os_pid)
-
-      Exec.stop(program)
+      assert true === Exec.os_process_alive?(os_pid)
     end
 
     test "returns false for a process that has ended" do
-      {:ok, program} = Exec.open(["true"])
+      {:ok, program} = Exec.open(["sleep", "30"])
       {:ok, %{os_pid: os_pid}} = Exec.info(program)
-      {:ok, {:exit, 0}} = Exec.read(program)
+      :ok = Exec.signal(program, :sigkill)
 
-      refute Exec.os_process_alive?(os_pid)
+      {:ok, %{exit_reason: 9, exit_code: nil, signal: 9, exit_status: :sigkill, core_dump: false}} =
+        Exec.read(program)
+
+      assert false === Exec.os_process_alive?(os_pid)
     end
   end
 
   describe "send_sigterm/1" do
     test "ends a running process with SIGTERM" do
-      {:ok, program} = Exec.open(["sleep", "30"])
+      {:ok, program} = Exec.open(["sh", "-c", "echo started; exec sleep 30"])
+      {:ok, %{stdout: "started\n"}} = Exec.read(program)
       {:ok, %{os_pid: os_pid}} = Exec.info(program)
 
-      assert Exec.send_sigterm(os_pid)
-      assert {:ok, {:exit, {:signal, :sigterm}}} = Exec.read(program)
+      assert true === Exec.send_sigterm(os_pid)
+
+      assert {:ok,
+              %{
+                exit_reason: 15,
+                exit_code: nil,
+                signal: 15,
+                exit_status: :sigterm,
+                core_dump: false
+              }} =
+               Exec.read(program)
     end
 
     test "returns false for a process that has ended" do
-      {:ok, program} = Exec.open(["true"])
+      {:ok, program} = Exec.open(["sleep", "30"])
       {:ok, %{os_pid: os_pid}} = Exec.info(program)
-      {:ok, {:exit, 0}} = Exec.read(program)
+      :ok = Exec.signal(program, :sigkill)
 
-      refute Exec.send_sigterm(os_pid)
+      {:ok, %{exit_reason: 9, exit_code: nil, signal: 9, exit_status: :sigkill, core_dump: false}} =
+        Exec.read(program)
+
+      assert false === Exec.send_sigterm(os_pid)
     end
   end
 
@@ -57,16 +147,67 @@ defmodule ExecTest do
       {:ok, program} = Exec.open(["sleep", "30"])
       {:ok, %{os_pid: os_pid}} = Exec.info(program)
 
-      assert Exec.send_sigkill(os_pid)
-      assert {:ok, {:exit, {:signal, :sigkill}}} = Exec.read(program)
+      assert true === Exec.send_sigkill(os_pid)
+
+      assert {:ok,
+              %{
+                exit_reason: 9,
+                exit_code: nil,
+                signal: 9,
+                exit_status: :sigkill,
+                core_dump: false
+              }} =
+               Exec.read(program)
     end
 
     test "returns false for a process that has ended" do
-      {:ok, program} = Exec.open(["true"])
+      {:ok, program} = Exec.open(["sleep", "30"])
       {:ok, %{os_pid: os_pid}} = Exec.info(program)
-      {:ok, {:exit, 0}} = Exec.read(program)
+      :ok = Exec.signal(program, :sigkill)
 
-      refute Exec.send_sigkill(os_pid)
+      {:ok, %{exit_reason: 9, exit_code: nil, signal: 9, exit_status: :sigkill, core_dump: false}} =
+        Exec.read(program)
+
+      assert false === Exec.send_sigkill(os_pid)
+    end
+  end
+
+  describe "run/2" do
+    test "returns the command's output and exit" do
+      assert {:ok,
+              %Exec.Result{
+                stdout: "hello\n",
+                stderr: "",
+                exit: %{
+                  exit_reason: 0,
+                  exit_code: 0,
+                  signal: nil,
+                  exit_status: nil,
+                  core_dump: false
+                }
+              }} = Exec.run(["echo", "hello"])
+    end
+
+    test "calls :stream with each chunk of output as it arrives" do
+      test_pid = self()
+
+      Exec.run(["echo", "hello"], stream: fn chunk -> send(test_pid, chunk) end)
+
+      assert_received {:stdout, "hello\n"}
+    end
+  end
+
+  describe "stream/2" do
+    test "returns the command's output as frames, one per line" do
+      assert [
+               :"$start_of_stream",
+               {:ok, {:stdout, "a\n"}},
+               {:ok, {:stdout, "b\n"}},
+               {:ok,
+                {:exit,
+                 %{exit_reason: 0, exit_code: 0, signal: nil, exit_status: nil, core_dump: false}}},
+               :"$end_of_stream"
+             ] = ["printf", "a\\nb\\n"] |> Exec.stream() |> Enum.to_list()
     end
   end
 end
