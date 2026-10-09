@@ -32,7 +32,7 @@ defmodule ExecTest do
   end
 
   describe "a program whose owner exits" do
-    test "ends with its owner and logs nothing" do
+    test "ends with its owner and leaves the log empty" do
       test_pid = self()
 
       log =
