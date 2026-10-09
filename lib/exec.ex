@@ -448,6 +448,81 @@ defmodule Exec do
   def info(program), do: Program.info(program)
 
   @doc """
+  Returns whether an operating-system process with pid `os_pid` exists.
+
+  Runs `kill -0 <os_pid>`, which sends no signal: the operating system only
+  checks that the process exists and that this VM's user may signal it. A
+  process owned by another user therefore answers `false`. A pid belonging to a
+  process that has ended may since have been reused by another process.
+
+  ## Examples
+
+      {:ok, program} = Exec.open("sleep 30")
+      {:ok, %{os_pid: os_pid}} = Exec.info(program)
+      true = Exec.os_process_alive?(os_pid)
+  """
+  @spec os_process_alive?(non_neg_integer()) :: boolean()
+  def os_process_alive?(os_pid) when is_integer(os_pid) do
+    case run(["kill", "-0", Integer.to_string(os_pid)]) do
+      {:ok, %Result{exit_status: 0}} -> true
+      {:ok, %Result{exit_status: _status}} -> false
+    end
+  end
+
+  @doc """
+  Sends `SIGTERM` to the operating-system process with pid `os_pid`, asking it
+  to end.
+
+  Runs `kill -TERM <os_pid>`. Returns `true` when the signal was sent, and
+  `false` when there is no such process or this VM's user may not signal it.
+  The process may handle or ignore `SIGTERM`; `os_process_alive?/1` tells
+  whether it has ended.
+
+  Unlike `signal/2`, which takes a handle from `open/2` and signals the
+  program's whole process group, this signals the one process `os_pid` names,
+  including one this library did not start.
+
+  ## Examples
+
+      {:ok, program} = Exec.open("sleep 30")
+      {:ok, %{os_pid: os_pid}} = Exec.info(program)
+      true = Exec.send_sigterm(os_pid)
+  """
+  @spec send_sigterm(non_neg_integer()) :: boolean()
+  def send_sigterm(os_pid) when is_integer(os_pid) do
+    case run(["kill", "-TERM", Integer.to_string(os_pid)]) do
+      {:ok, %Result{exit_status: 0}} -> true
+      {:ok, %Result{exit_status: _status}} -> false
+    end
+  end
+
+  @doc """
+  Sends `SIGKILL` to the operating-system process with pid `os_pid`, ending it
+  at once.
+
+  Runs `kill -KILL <os_pid>`. Returns `true` when the signal was sent, and
+  `false` when there is no such process or this VM's user may not signal it.
+  A process cannot handle or ignore `SIGKILL`.
+
+  Unlike `signal/2`, which takes a handle from `open/2` and signals the
+  program's whole process group, this signals the one process `os_pid` names,
+  including one this library did not start.
+
+  ## Examples
+
+      {:ok, program} = Exec.open("sleep 30")
+      {:ok, %{os_pid: os_pid}} = Exec.info(program)
+      true = Exec.send_sigkill(os_pid)
+  """
+  @spec send_sigkill(non_neg_integer()) :: boolean()
+  def send_sigkill(os_pid) when is_integer(os_pid) do
+    case run(["kill", "-KILL", Integer.to_string(os_pid)]) do
+      {:ok, %Result{exit_status: 0}} -> true
+      {:ok, %Result{exit_status: _status}} -> false
+    end
+  end
+
+  @doc """
   Runs `command` to completion and returns its output.
 
   Consumes `stream/2` eagerly: the frames it yields are folded into a
